@@ -2,7 +2,7 @@
 #SBATCH --job-name=cno_train
 #SBATCH --output=results/logs/%j.out     # STDOUT log file
 #SBATCH --error=results/logs/%j.err      # STDERR log file
-#SBATCH --time=04:00:00                  # 4 hours
+#SBATCH --time=06:30:00                  # 6 hours 30 min
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8                # 8 CPU cores
 #SBATCH --mem-per-cpu=8G                 # 8GB RAM
