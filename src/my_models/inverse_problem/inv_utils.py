@@ -55,7 +55,6 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
     d = dict()
 
     d["which"] = which_example
-    d["time_steps"] = steps
 
     for file in files:
         with open(file) as f:
@@ -156,6 +155,9 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
     assert "in_dim" in d
     assert "out_dim" in d
     
+    d['include_zero'] = False
+
+    d["time_steps"] = steps
     _allowed = []
     print("STEPS", d["time_steps"])
     d["allowed"] = 'all'
@@ -164,8 +166,8 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
             _allowed.append(t)
     elif d['allowed'] == 'one':
         _allowed = [1]
-    d["allowed_tran"] = _allowed
-    
+    d["allowed_transitions"] = _allowed
+    print(_allowed)
     if "exp" not in d:
         d["exp"] = 1
 

@@ -2,7 +2,7 @@
 #SBATCH --job-name=inv_cno_train
 #SBATCH --output=inv_results/logs/%j.out     # STDOUT log file
 #SBATCH --error=inv_results/logs/%j.err      # STDERR log file
-#SBATCH --time=00:30:00                  # 
+#SBATCH --time=04:00:00                  # 
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8                # 8 CPU cores
 #SBATCH --mem-per-cpu=8G                 # 8GB RAM

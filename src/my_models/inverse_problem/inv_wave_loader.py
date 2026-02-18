@@ -86,37 +86,37 @@ class InverseWaveGaussians(BaseTimeDataset):
 
 
     
-# if __name__ == "__main__":
+if __name__ == "__main__":
 
-#     ds = InverseWaveGaussians(
-#         which="train", 
-#         resolution=128, 
-#         num_trajectories=10, 
-#         data_path="/cluster/home/svisnjic/Thalassa/data", # Update this to your cluster path
-#         time_input=True,
-#         max_num_time_steps=15,
-#         time_step_size=1,
-#     )
+    ds = InverseWaveGaussians(
+        which="train", 
+        resolution=128, 
+        num_trajectories=10, 
+        data_path="/cluster/home/svisnjic/Thalassa/data", # Update this to your cluster path
+        time_input=True,
+        max_num_time_steps=15,
+        time_step_size=1,
+    )
 
-#     print(f"total loaded samples: {len(ds)}")
+    print(f"total loaded samples: {len(ds)}")
 
-#     # 2. Test a single item retrieval
-#     time_val, input_tensor, label_tensor = ds[0]
+    # 2. Test a single item retrieval
+    time_val, input_tensor, label_tensor = ds[0]
 
-#     print("\n--- Single Item Check ---")
-#     print(f"Time (normalized): {time_val:.4f}")
-#     print(f"Input Shape:  {input_tensor.shape}")  # Expected: [3, 128, 128]
-#     print(f"Label Shape:  {label_tensor.shape}")  # Expected: [1, 128, 128]
-#     print(f"Input Range:  {input_tensor.min():.2f} to {input_tensor.max():.2f}")
-#     print(f"Label Range:  {label_tensor.min():.2f} to {label_tensor.max():.2f}")
+    print("\n--- Single Item Check ---")
+    print(f"Time (normalized): {time_val:.4f}")
+    print(f"Input Shape:  {input_tensor.shape}")  # Expected: [3, 128, 128]
+    print(f"Label Shape:  {label_tensor.shape}")  # Expected: [1, 128, 128]
+    print(f"Input Range:  {input_tensor.min():.2f} to {input_tensor.max():.2f}")
+    print(f"Label Range:  {label_tensor.min():.2f} to {label_tensor.max():.2f}")
 
-#     # 3. Test the DataLoader (Batching)
-#     from torch.utils.data import DataLoader
-#     loader = DataLoader(ds, batch_size=4, shuffle=True)
+    # 3. Test the DataLoader (Batching)
+    from torch.utils.data import DataLoader
+    loader = DataLoader(ds, batch_size=4, shuffle=True)
     
-#     batch_time, batch_in, batch_label = next(iter(loader))
-#     print("\n--- Batch Check ---")
-#     print(f"Batch Input Shape: {batch_in.shape}") # Expected: [4, 3, 128, 128]
-#     print(f"Batch Label Shape: {batch_label.shape}") # Expected: [4, 1, 128, 128]
+    batch_time, batch_in, batch_label = next(iter(loader))
+    print("\n--- Batch Check ---")
+    print(f"Batch Input Shape: {batch_in.shape}") # Expected: [4, 3, 128, 128]
+    print(f"Batch Label Shape: {batch_label.shape}") # Expected: [4, 1, 128, 128]
     
-#     print("\nSanity Check Passed! You are ready for the CNO.")
+    print("\nSanity Check Passed! You are ready for the CNO.")

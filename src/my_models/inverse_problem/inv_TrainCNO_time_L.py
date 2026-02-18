@@ -12,46 +12,113 @@ import sys
 import pandas as pd
 import torch
 
+
+from pytorch_lightning.callbacks import Callback
+from inv_checker import save_reconstruction_sample # Import your new function
+
+
+class VisualVerificationCallback(Callback):
+    def __init__(self, save_dir, frequency=10):
+        super().__init__()
+        self.save_dir = save_dir
+        self.frequency = frequency
+        os.makedirs(save_dir, exist_ok=True)
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.frequency == 0:
+            # --- PROTECTIVE WRAPPER ---
+            try:
+                dataset = trainer.train_dataloader.dataset
+                save_reconstruction_sample(
+                    model=pl_module, 
+                    dataset=dataset, 
+                    epoch=trainer.current_epoch, 
+                    save_folder=self.save_dir
+                )
+                print(f"Successfully saved visual for epoch {trainer.current_epoch}")
+            except Exception as e:
+                # If something goes wrong (OOM, device error, etc.), 
+                # we just print it and keep training.
+                print(f"\n[Visuals Warning] Plotting failed at epoch {trainer.current_epoch}: {e}")
+
 if len(sys.argv) <= 2:
     
-    training_properties = {
-        "learning_rate": 0.00075, 
-        "weight_decay": 1e-6,
-        "scheduler_step": 10,
-        "scheduler_gamma": 0.9,
-        "epochs": 10, #100
-        "batch_size": 16,         
-        "time_steps": 15,         # How many time steps to select?
-        "dt": 1,                  # What is the time step? (1 means include entire traj, 2 means taking every other step, etc.
-        "training_samples": 256, # How many training samples?
-        "time_input": 1,          # Should we include time in the input channels?
-        "allowed": 'all',         # All2ALL (train) - all , or One2All (train) - one2all, AR training - one
-        "cluster": True,          # Something internal (don't bother)
-    }
+    # training_properties = {
+    #     "learning_rate": 0.001, 
+    #     "weight_decay": 1e-6,
+    #     "scheduler_step": 10,
+    #     "scheduler_gamma": 0.9,
+    #     "epochs": 100,
+    #     "batch_size": 16,         
+    #     "time_steps": 15,         # How many time steps to select?
+    #     "dt": 1,                  # What is the time step? (1 means include entire traj, 2 means taking every other step, etc.
+    #     "training_samples": 256, # How many training samples?
+    #     "time_input": 1,          # Should we include time in the input channels?
+    #     "allowed": 'all',         # All2ALL (train) - all , or One2All (train) - one2all, AR training - one
+    #     "cluster": True,          # Something internal (don't bother)
+    # }
     
+    # model_architecture_ = {
+    #     "N_layers": 4,            # Number of (D) & (U) blocks 
+    #     "channel_multiplier": 32, # Parameter d_e (how the number of channels changes)
+    #     "N_res": 8,               # Number of (R) blocks in the middle networs.
+    #     "N_res_neck" : 8,         # Number of (R) blocks in the BN
+        
+    #     "batch_norm": 1,          # Should we use simple BN -- 1: use it? If is_time == 1, we turn it off
+    #     "is_time": 1,             # Should we conditional BN/LN/IN?
+    #     "nl_dim": "23",           # If yes, which norm? '23'-IN, '023'-BN, '123'-LN
+        
+    #     "in_size": 128,           # Resolution of the computational grid
+    #     "activation": 'cno_lrelu_torch',# cno_lrelu, cno_lrelu_torch or lrelu
+        
+    #     "is_att": False,          # Should we use attention in the bottleneck? You could add it!
+    #     "patch_size" : 1,         # ViT parameters, if is_att == True
+    #     "dim_multiplier" : 1,
+    #     "depth" : 2,
+    #     "heads" : 2,
+    #     "dim_head_multiplier" : 0.5,
+    #     "mlp_dim_multiplier" : 1.0,
+    #     "emb_dropout" : 0.
+    #     }
+
+    training_properties = {
+        "learning_rate": 0.00075,      # Slightly lower for stability with larger model capacity
+        "weight_decay": 1e-6,
+        "scheduler_step": 15,          # Adjusted for longer epoch count
+        "scheduler_gamma": 0.9,
+        "epochs": 100,                 # Inverse problems require more time to resolve structural maps
+        "batch_size": 16,              # Optimal for RTX 4090 memory/gradient stability
+        "time_steps": 15,              # Use the full simulation depth
+        "dt": 1,                       
+        "training_samples": 512,      # Critical: Increased to capture diverse c-field patterns -> 2048
+        "time_input": True,            
+        "allowed": 'all',              # Enables All-to-All snapshot pairs (physics augmentation)
+        "cluster": True,
+    }
+
     model_architecture_ = {
-        "N_layers": 4,            # Number of (D) & (U) blocks 
-        "channel_multiplier": 32, # Parameter d_e (how the number of channels changes)
-        "N_res": 8,               # Number of (R) blocks in the middle networs.
-        "N_res_neck" : 8,         # Number of (R) blocks in the BN
+        "N_layers": 4,                 # Deep U-Net structure for global context on 128x128 grid
+        "channel_multiplier": 64,      # Doubled capacity to store complex hidden features
+        "N_res": 8,                    # Deep residual processing in blocks
+        "N_res_neck" : 8,              # Strong bottleneck for feature extraction
         
-        "batch_norm": 1,          # Should we use simple BN -- 1: use it? If is_time == 1, we turn it off
-        "is_time": 1,             # Should we conditional BN/LN/IN?
-        "nl_dim": "23",           # If yes, which norm? '23'-IN, '023'-BN, '123'-LN
+        "batch_norm": 1,               
+        "is_time": 1,                  # Conditional Norms enabled for CIN logic
+        "nl_dim": "23",                # '23' for Instance Norm-based conditioning
         
-        "in_size": 128,           # Resolution of the computational grid
-        "activation": 'cno_lrelu_torch',# cno_lrelu, cno_lrelu_torch or lrelu
+        "in_size": 128,                
+        "activation": 'cno_lrelu_torch',
         
-        "is_att": False,          # Should we use attention in the bottleneck? You could add it!
-        "patch_size" : 1,         # ViT parameters, if is_att == True
+        "is_att": False,               
+        "patch_size" : 1, 
         "dim_multiplier" : 1,
         "depth" : 2,
-        "heads" : 2,
+        "heads" : 4,                   # Increased heads if you decide to toggle is_att to True
         "dim_head_multiplier" : 0.5,
         "mlp_dim_multiplier" : 1.0,
-        "emb_dropout" : 0.
-        }
-    
+        "emb_dropout" : 0.1,           # Small dropout to prevent overfitting on specific wave shapes
+    }
+
     # AVAILABLE EXPERIMENTS:
     # "ns_brownian", "ns_pwc", "ns_gauss", "ns_sin", "ns_vortex", "ns_shear
     # "ns_pwc_t:
@@ -177,16 +244,22 @@ model   = CNO_time(in_dim =  loader_dict["in_dim"],
 
 #---------------------------------------------------------
 
-ver = "_1502" # Just a random string to be added to the model name
+ver = "_1802" # Just a random string to be added to the model name
 
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
 early_part = 10
 early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=training_properties["epochs"]//early_part)
 
+# Initialize the callback
+visual_callback = VisualVerificationCallback(
+    save_dir=folder + "/visuals" + str(ver), 
+    frequency=1
+)
+
 logger = TensorBoardLogger(save_dir=folder, version=ver, name="logs")
 trainer = Trainer(devices = -1,
                 max_epochs = training_properties["epochs"],
-                callbacks = [checkpoint_callback,early_stop_callback],
+                callbacks = [checkpoint_callback,early_stop_callback, visual_callback],
                 strategy="ddp_find_unused_parameters_true", #IMPORTANT!!!
                 logger=logger)
 trainer.fit(model)
