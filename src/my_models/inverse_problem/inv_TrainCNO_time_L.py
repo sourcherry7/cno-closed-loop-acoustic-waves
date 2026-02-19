@@ -86,11 +86,11 @@ if len(sys.argv) <= 2:
         "weight_decay": 1e-6,
         "scheduler_step": 15,          # Adjusted for longer epoch count
         "scheduler_gamma": 0.9,
-        "epochs": 100,                 # Inverse problems require more time to resolve structural maps
+        "epochs": 15,                 # Inverse problems require more time to resolve structural maps
         "batch_size": 16,              # Optimal for RTX 4090 memory/gradient stability
         "time_steps": 15,              # Use the full simulation depth
         "dt": 1,                       
-        "training_samples": 512,      # Critical: Increased to capture diverse c-field patterns -> 2048
+        "training_samples": 2048,      # Critical: Increased to capture diverse c-field patterns -> 2048
         "time_input": True,            
         "allowed": 'all',              # Enables All-to-All snapshot pairs (physics augmentation)
         "cluster": True,
@@ -242,9 +242,11 @@ model   = CNO_time(in_dim =  loader_dict["in_dim"],
                     mlp_dim_multiplier = model_architecture_["mlp_dim_multiplier"],
                     emb_dropout = model_architecture_["emb_dropout"])
 
+
+
 #---------------------------------------------------------
 
-ver = "_1802" # Just a random string to be added to the model name
+ver = "_1802_second" # Just a random string to be added to the model name
 
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
 early_part = 10

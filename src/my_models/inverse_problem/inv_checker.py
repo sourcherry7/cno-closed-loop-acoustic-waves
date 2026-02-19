@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from inv_CNO_timeModule_CIN import CNO_time # Ensure this path is correct
 from inv_utils import _load_inverse_dict
 
-def verify_inverse_training(checkpoint_path, loader_dict):
+def verify_inverse_training(checkpoint_path, loader_dict, net):
     # 1. Load the model from the checkpoint
     # Note: Use map_location='cpu' if you aren't on a GPU node
     model = CNO_time.load_from_checkpoint(
@@ -72,7 +72,7 @@ def verify_inverse_training(checkpoint_path, loader_dict):
 
 import numpy as np
 
-def save_reconstruction_sample(model, dataset, epoch, save_folder, sample_idx=5):
+def save_reconstruction_sample(model, dataset, epoch, save_folder, sample_idx=4):
     """
     Visualizes the progress of the inverse problem with fixed color scaling.
     """
@@ -93,16 +93,19 @@ def save_reconstruction_sample(model, dataset, epoch, save_folder, sample_idx=5)
     target_np = target_c[0].cpu().numpy()
     c_min = np.min(target_np)
     c_max = np.max(target_np)
+
+    u_min_t1 = np.min(input_tensor[0].cpu().numpy())
+    u_max_t1 = np.max(input_tensor[0].cpu().numpy())
     
     # 4. Plotting
     fig, ax = plt.subplots(1, 5, figsize=(25, 5))
     dt_actual = time_val * 15.0
     
     # Wave Snapshots
-    ax[0].imshow(input_tensor[0].cpu().numpy())
+    ax[0].imshow(input_tensor[0].cpu().numpy(), vmin=u_min_t1, vmax=u_max_t1)
     ax[0].set_title("Input: u(t1)")
     
-    ax[1].imshow(input_tensor[1].cpu().numpy())
+    ax[1].imshow(input_tensor[1].cpu().numpy(), vmin=u_min_t1, vmax=u_max_t1)
     ax[1].set_title(f"Input: u(t2) (dt={dt_actual:.1f})")
     
     # Difference (Motion) - often useful with RdBu or seismic cmaps
@@ -127,7 +130,7 @@ if __name__ == "__main__":
     # Point this to one of your .ckpt files from the image
     ckpt = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_1602/epoch=1-step=12.ckpt"
     # Use the loader_dict you created in your main script
-    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints" # "--- PROVIDE THE FOLDER TO SAVE THE MODEL ----" 
+    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_1802_second" # "--- PROVIDE THE FOLDER TO SAVE THE MODEL ----" 
     files = [folder + '/inv_training_properties.txt', folder + '/inv_net_architecture.txt']
     loader_dict = _load_inverse_dict(files=files, steps =15, which_example='wave_gauss', is_masked = False)
     loader_dict['data_path'] = "/cluster/home/svisnjic/Thalassa/data"
