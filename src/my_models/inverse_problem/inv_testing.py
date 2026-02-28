@@ -153,10 +153,10 @@ def summarize_and_save(metrics_dict, output_dir):
 # -----------------------------------------------------------------------------
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
-def main():
+def main(model_name):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_1802_second"
+    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/" + str(model_name) # "model_1802_second"
     ckpt_path = f"{folder}/epoch=2-step=46080.ckpt"
     data_path = "/cluster/home/svisnjic/Thalassa/data"
     
@@ -210,7 +210,7 @@ def main():
     # )
     
     # 5. Run Testing
-    output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals"
+    output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
     os.makedirs(output_dir, exist_ok=True)
     
     # print("\nGenerating representative plots...")
@@ -237,4 +237,4 @@ def main():
     # summarize_and_save(metrics, output_dir)
 
 if __name__ == "__main__":
-    main()
+    main(model_name = "model_2802_new_data")

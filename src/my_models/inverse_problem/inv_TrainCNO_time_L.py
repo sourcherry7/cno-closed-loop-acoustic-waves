@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import sys
+import shutil
 
 import pandas as pd
 import torch
@@ -246,7 +247,7 @@ model   = CNO_time(in_dim =  loader_dict["in_dim"],
 
 #---------------------------------------------------------
 
-ver = "_1802_second" # Just a random string to be added to the model name
+ver = "_2802_new_data" # Just a random string to be added to the model name
 
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
 early_part = 10
@@ -268,3 +269,17 @@ trainer.fit(model)
 trainer.validate(model)
 
 #---------------------------------------------------------
+
+# Move property files to model dir to avoid inproper overwriting
+
+
+files_to_move = files
+dest_dir = folder+"/model"+str(ver)
+
+os.makedirs(dest_dir, exist_ok=True)
+
+for movable_file in files_to_move:
+    if os.path.exists(movable_file):
+        shutil.move(movable_file, dest_dir)
+    else:
+        print(f"File not found: {movable_file}")
