@@ -83,9 +83,9 @@ if len(sys.argv) <= 2:
     #     }
 
     training_properties = {
-        "learning_rate": 0.0008,      # Slightly lower for stability with larger model capacity
-        "weight_decay": 1e-6,
-        "scheduler_step": 10,          # Adjusted for longer epoch count
+        "learning_rate": 0.0002,      # Slightly lower for stability with larger model capacity
+        "weight_decay": 1e-4,
+        "scheduler_step": 3,          # Adjusted for longer epoch count
         "scheduler_gamma": 0.9,
         "epochs": 30,                 # Inverse problems require more time to resolve structural maps
         "batch_size": 32,              # 16 Optimal for RTX 4090 memory/gradient stability
@@ -117,7 +117,7 @@ if len(sys.argv) <= 2:
         "heads" : 4,                   # Increased heads if you decide to toggle is_att to True
         "dim_head_multiplier" : 0.5,
         "mlp_dim_multiplier" : 1.0,
-        "emb_dropout" : 0.1,           # Small dropout to prevent overfitting on specific wave shapes
+        "emb_dropout" : 0.2,           # Small dropout to prevent overfitting on specific wave shapes
     }
 
     # AVAILABLE EXPERIMENTS:
@@ -247,12 +247,12 @@ model   = CNO_time(in_dim =  loader_dict["in_dim"],
 
 #---------------------------------------------------------
 
-ver = "_0103_new_data" # Just a random string to be added to the model name
+ver = "_0203_new_data" # Just a random string to be added to the model name
 
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
 # early_part = 10
 # early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=training_properties["epochs"]//early_part)
-early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=5)
+early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=10)
 
 # Initialize the callback
 visual_callback = VisualVerificationCallback(
