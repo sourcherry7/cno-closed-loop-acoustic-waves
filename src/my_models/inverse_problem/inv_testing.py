@@ -7,6 +7,11 @@ import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
+MYMODELS_DIR = f"{PROJECT_ROOT}/src/my_models"
+INV_DIR = f"{MYMODELS_DIR}/inverse_problem"
+sys.path.append(INV_DIR)
+
 from inv_CNO_timeModule_CIN import CNO_time
 from inv_wave_loader import InverseWaveGaussians
 from inv_utils import _load_inverse_dict
@@ -150,75 +155,82 @@ def summarize_and_save(metrics_dict, output_dir):
     plt.savefig(f"{output_dir}/error_by_dt.png")
     plt.close()
 
-# -----------------------------------------------------------------------------
-# MAIN EXECUTION
-# -----------------------------------------------------------------------------
-def main(model_name):
+
+def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/" + str(model_name) # "model_1802_second"
-    ckpt_path = f"{folder}/epoch=2-step=46080.ckpt"
+    ckpt_path = f"{folder}/{checkpoint_name}" # epoch=2-step=46080.ckpt
     data_path = "/cluster/home/svisnjic/Thalassa/data"
     
-    # # 1. Load Architecture
-    # files = [f"{folder}/inv_training_properties.txt", f"{folder}/inv_net_architecture.txt"]
-    # train_prop = pd.read_csv(files[0], header=None, index_col=0).squeeze().to_dict()
-    # net_arch = pd.read_csv(files[1], header=None, index_col=0).squeeze().to_dict()
+    # 1. Load Architecture
+    files = [f"{folder}/inv_training_properties.txt", f"{folder}/inv_net_architecture.txt"]
+    train_prop = pd.read_csv(files[0], header=None, index_col=0).squeeze().to_dict()
+    net_arch = pd.read_csv(files[1], header=None, index_col=0).squeeze().to_dict()
     
-    # for d in [train_prop, net_arch]:
-    #     for k, v in d.items(): d[k] = safe_eval(v)
+    for d in [train_prop, net_arch]:
+        for k, v in d.items(): d[k] = safe_eval(v)
 
-    # net_arch["batch_norm"] = net_arch.get("batch_norm") in [1, True, 'True']
-    # net_arch["is_att"] = net_arch.get("is_att", False) in [1, True, 'True']
+    net_arch["batch_norm"] = net_arch.get("batch_norm") in [1, True, 'True']
+    net_arch["is_att"] = net_arch.get("is_att", False) in [1, True, 'True']
 
-    # # 2. Setup Loader Dictionary
-    # loader_dict = _load_inverse_dict(files=files, steps=15, which_example='wave_gauss', is_masked=False)
-    # loader_dict['data_path'] = data_path
+    # 2. Setup Loader Dictionary
+    loader_dict = _load_inverse_dict(files=files, steps=15, which_example='wave_gauss', is_masked=False)
+    loader_dict['data_path'] = data_path
     
-    # _allowed = list(range(0 if loader_dict.get("include_zero") else 1, int(train_prop.get("time_steps", 15)) + 1))
-    # loader_dict['allowed_transitions'] = _allowed
+    _allowed = list(range(0 if loader_dict.get("include_zero") else 1, int(train_prop.get("time_steps", 15)) + 1))
+    loader_dict['allowed_transitions'] = _allowed
 
-    # # 3. Model Initialization (RESTORED MISSING CONDITIONAL PARAMS)
-    # print(f"Initializing model on {device}...")
-    # model = CNO_time.load_from_checkpoint(
-    #     ckpt_path,
-    #     map_location=device,
-    #     in_dim=loader_dict["in_dim"],
-    #     out_dim=loader_dict.get("out_dim", 1),
-    #     in_size=net_arch.get("in_size", 128),
-    #     N_layers=net_arch.get("N_layers"),
-    #     channel_multiplier=net_arch.get("channel_multiplier"),
-    #     N_res=net_arch.get("N_res"),
-    #     N_res_neck=net_arch.get("N_res_neck"),
-    #     batch_norm=net_arch.get("batch_norm"),
-    #     is_time=net_arch.get("is_time", 1),
-    #     is_att=net_arch.get("is_att"),
-    #     activation=net_arch.get("activation", "cno_lrelu_torch"),
-    #     nl_dim=net_arch.get("nl_dim"),
-    #     time_steps=loader_dict["time_steps"],
-    #     time_input=loader_dict.get('time_input', True),
-    #     loader_dictionary=loader_dict,
-    #     strict=False, 
-    #     allowed_transitions=loader_dict['allowed_transitions']
-    # ).to(device)
+    # 3. Model Initialization (RESTORED MISSING CONDITIONAL PARAMS)
+    print(f"Initializing model on {device}...")
+    model = CNO_time.load_from_checkpoint(
+        ckpt_path,
+        map_location=device,
+        in_dim=loader_dict["in_dim"],
+        out_dim=loader_dict.get("out_dim", 1),
+        in_size=net_arch.get("in_size", 128),
+        N_layers=net_arch.get("N_layers"),
+        channel_multiplier=net_arch.get("channel_multiplier"),
+        N_res=net_arch.get("N_res"),
+        N_res_neck=net_arch.get("N_res_neck"),
+        batch_norm=net_arch.get("batch_norm"),
+        is_time=net_arch.get("is_time", 1),
+        is_att=net_arch.get("is_att"),
+        activation=net_arch.get("activation", "cno_lrelu_torch"),
+        nl_dim=net_arch.get("nl_dim"),
+        time_steps=loader_dict["time_steps"],
+        time_input=loader_dict.get('time_input', True),
+        loader_dictionary=loader_dict,
+        strict=False, 
+        allowed_transitions=loader_dict['allowed_transitions']
+    ).to(device)
 
-    # # 4. Dataset Loading
-    # test_dataset = InverseWaveGaussians(
-    #     which="test", resolution=128, num_trajectories=240, 
-    #     data_path=data_path, max_num_time_steps=15, 
-    #     time_step_size=1, allowed_transitions=loader_dict['allowed_transitions']
-    # )
+    # 4. Dataset Loading
+    test_dataset = InverseWaveGaussians(
+        which="test", resolution=128, num_trajectories=num_traj, 
+        data_path=data_path, max_num_time_steps=15, 
+        time_step_size=1, allowed_transitions=loader_dict['allowed_transitions']
+    )
+
+    return model, test_dataset
+
+
+# -----------------------------------------------------------------------------
+# MAIN EXECUTION
+# -----------------------------------------------------------------------------
+def main(model_name, checkpoint_name):
+    test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name = checkpoint_name, num_traj=240)
     
     # 5. Run Testing
     output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
     os.makedirs(output_dir, exist_ok=True)
     
-    # print("\nGenerating representative plots...")
+    print("\nGenerating representative plots...")
     
-    # # for traj in range(5):
-    # #     for dt in [1, 9]:
-    # #         plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
-    # #         print(f"Plotted trajctory {traj} at time pair (0, {dt}) and saved fig to: {output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
+    for traj in range(5):
+        for dt in [1, 9]:
+            plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
+            print(f"Plotted trajctory {traj} at time pair (0, {dt}) and saved fig to: {output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
 
     df = pd.read_csv(f'{output_dir}/test_metrics_summary.csv')
     df = df.iloc[:-1]
@@ -237,4 +249,4 @@ def main(model_name):
     # summarize_and_save(metrics, output_dir)
 
 if __name__ == "__main__":
-    main(model_name = "model_2802_new_data")
+    main(model_name = "model_2802_new_data", checkpoint_name = "epoch=2-step=46080.ckpt")
