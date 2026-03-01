@@ -128,9 +128,9 @@ def save_reconstruction_sample(model, dataset, epoch, save_folder, sample_idx=4)
 
 if __name__ == "__main__":
     # Point this to one of your .ckpt files from the image
-    ckpt = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_1602/epoch=1-step=12.ckpt"
+    ckpt = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_0103_new_data/epoch=3-step=30720.ckpt"
     # Use the loader_dict you created in your main script
-    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_1802_second" # "--- PROVIDE THE FOLDER TO SAVE THE MODEL ----" 
+    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/model_0103_new_data" # "--- PROVIDE THE FOLDER TO SAVE THE MODEL ----" 
     files = [folder + '/inv_training_properties.txt', folder + '/inv_net_architecture.txt']
     loader_dict = _load_inverse_dict(files=files, steps =15, which_example='wave_gauss', is_masked = False)
     loader_dict['data_path'] = "/cluster/home/svisnjic/Thalassa/data"

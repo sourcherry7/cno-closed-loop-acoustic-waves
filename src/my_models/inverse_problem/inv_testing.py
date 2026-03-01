@@ -218,9 +218,10 @@ def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
 # -----------------------------------------------------------------------------
 # MAIN EXECUTION
 # -----------------------------------------------------------------------------
-def main(model_name, checkpoint_name):
-    test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name = checkpoint_name, num_traj=240)
-    
+def main(model_name, checkpoint_name, num_traj):
+    model, test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name = checkpoint_name, num_traj=num_traj)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device).eval()
     # 5. Run Testing
     output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
     os.makedirs(output_dir, exist_ok=True)
@@ -232,6 +233,10 @@ def main(model_name, checkpoint_name):
             plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
             print(f"Plotted trajctory {traj} at time pair (0, {dt}) and saved fig to: {output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
 
+    metrics = calculate_test_metrics(model, test_dataset, device)
+    summarize_and_save(metrics, output_dir)
+
+    
     df = pd.read_csv(f'{output_dir}/test_metrics_summary.csv')
     df = df.iloc[:-1]
     plt.figure(figsize=(6, 3.5))
@@ -245,8 +250,6 @@ def main(model_name, checkpoint_name):
     plt.close()
     print(f'Saved error graph to {output_dir}/error_by_dt.pdf')
 
-    # metrics = calculate_test_metrics(model, test_dataset, device)
-    # summarize_and_save(metrics, output_dir)
 
 if __name__ == "__main__":
-    main(model_name = "model_2802_new_data", checkpoint_name = "epoch=2-step=46080.ckpt")
+    main(model_name = "model_0103_new_data", checkpoint_name = "epoch=3-step=30720.ckpt", num_traj=120)

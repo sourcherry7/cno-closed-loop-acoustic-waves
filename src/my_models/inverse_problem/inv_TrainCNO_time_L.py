@@ -252,7 +252,7 @@ ver = "_0103_new_data" # Just a random string to be added to the model name
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
 # early_part = 10
 # early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=training_properties["epochs"]//early_part)
-early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=10)
+early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=5)
 
 # Initialize the callback
 visual_callback = VisualVerificationCallback(
