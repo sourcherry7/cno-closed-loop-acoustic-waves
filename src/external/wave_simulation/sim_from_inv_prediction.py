@@ -20,15 +20,10 @@ from seismic_CPML_2D_pressure_second_order2 import seismicCPML2D
 
 
 
-def get_cno_prediction(model_name, checkpoint_name, traj_id, dt_gap):
+def get_cno_prediction(model, dataset, traj_id, dt_gap):
     """
     Consolidates logic to get CNO prediction and the Ground Truth trajectory.
     """
-    test_num_traj = 120
-    model, dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name=checkpoint_name, num_traj=test_num_traj)
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device).eval()
 
     sample_idx = traj_id * 120 + dt_gap - 1 
     time_val, input_tensor, target_c_norm = dataset[sample_idx]
@@ -195,7 +190,6 @@ def calculate_and_plot_errors(u_gt_traj, u_resim_traj, save_path):
 
 if __name__ == "__main__":
 
-    traj = 5
     dt = 9
     num_test_trajectories = 120
     total_errors = []
@@ -204,12 +198,18 @@ if __name__ == "__main__":
     print(f"Starting closed-loop evaluation for {num_test_trajectories} trajectories at dt={dt}...")
     start_time = time.time()
 
+    test_num_traj = 120
+    model, dataset = make_test_dataset_from_ckpt(model_name="model_0103_new_data", checkpoint_name="epoch=3-step=30720.ckpt", num_traj=test_num_traj)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device).eval()
+
     for traj in range(num_test_trajectories):
         print("--- STEP 1 & 2: CNO Inference ---")
         c_pred_norm, c_gt_norm, u_gt_traj_phys, dat_path = get_cno_prediction(
-            model_name="model_0103_new_data", 
-            checkpoint_name="epoch=3-step=30720.ckpt", 
-            traj_id=traj, 
+            model=model,
+            dataset=dataset,
+            traj_id=traj,
             dt_gap=dt
         )
         
