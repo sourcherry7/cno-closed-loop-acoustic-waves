@@ -35,8 +35,8 @@ class InverseWaveGaussians(BaseTimeDataset):
 
 
         self.constants = {
-            "mean": json_constants['mean'], # 0.0334376316,
-            "std": json_constants['std'], # 0.1171879068,
+            "mean": json_constants['mean_u'], # 0.0334376316,
+            "std": json_constants['std_u'], # 0.1171879068,
             "mean_c": json_constants['mean_c'], # 2618.4593933,
             "std_c": json_constants['std_c'], # 601.51658913,
             "time": float(json_constants['time_steps']) # 15.0,

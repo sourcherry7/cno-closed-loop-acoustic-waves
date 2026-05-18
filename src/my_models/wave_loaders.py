@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import numpy as np
+import json
 
 # --- 1. SETUP PATHS ---
 PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
@@ -72,52 +73,85 @@ class WaveLoader:
         
         return t, x, y
 
+# --- UPDATE IN wave_loaders.py (get_sample_by_index) ---
     def get_sample_by_index(self, idx):
-        """
-        Get a specific sample from the dataset by index.
-        Returns: (time_t, x_input, c_velocity)
-        """
         self._ensure_config()
-        from DataLoaders.CNO_TimeLoaders import WaveSeismic, WaveGaussians
+        from DataLoaders.CNO_TimeLoaders import WaveGaussians
         
         if not hasattr(self, '_index_dataset'):
-            step_max = self.loader_dict.get("step_max", self.loader_dict.get("steps", 15))
+            # Use the actual step_max from your new JSON/config
+            step_max = self.loader_dict.get("step_max", 15)
             
             common_args = {
                 "max_num_time_steps": step_max,
                 "time_step_size": 1,
                 "resolution": 128,
-                "in_dist": True,
                 "num_trajectories": -1, 
-                "time_input": 1,
+                "time_input": True, # Ensure time channel is active
                 "which": "test",
             }
-            data_dir = f"{PROJECT_ROOT}/data"
+            # Use the PROJECT_ROOT to find the new data directory
+            data_dir = os.path.join(PROJECT_ROOT, "data")
             
-            print(f"Initializing Index Dataset (loading all trajectories)...")
-            if "seismic" in self.which_name:
-                self._index_dataset = WaveSeismic(data_path=data_dir, **common_args)
-            else:
-                self._index_dataset = WaveGaussians(data_path=data_dir, **common_args)
+            print(f"Initializing Index Dataset for NEW GAUSS data...")
+            # This triggers your updated WaveGaussians class which loads 'new_wave_gauss_data.h5'
+            self._index_dataset = WaveGaussians(data_path=data_dir, **common_args)
         
         raw_sample = self._index_dataset[idx]
+        t_scalar = raw_sample[0].unsqueeze(0).to(self.device)     
+        x_input = raw_sample[1].unsqueeze(0).to(self.device)      
         
-        t_scalar = raw_sample[0].unsqueeze(0).to(self.device)     # [1, 1]
-        x_input = raw_sample[1].unsqueeze(0).to(self.device)      # [1, C, H, W]
-        
-        # Extract c (Velocity). 
-        # Structure is [u, c, t]. C is at index 1.
-        c_velocity = x_input.squeeze().cpu().numpy()[1]          # [H, W]
+        # Velocity is index 1 in the [u, c, t] stack
+        c_velocity = x_input.squeeze().cpu().numpy()[1]          
         
         return t_scalar, x_input, c_velocity
+
+    # def get_sample_by_index(self, idx):
+    #     """
+    #     Get a specific sample from the dataset by index.
+    #     Returns: (time_t, x_input, c_velocity)
+    #     """
+    #     self._ensure_config()
+    #     from DataLoaders.CNO_TimeLoaders import WaveSeismic, WaveGaussians
+        
+    #     if not hasattr(self, '_index_dataset'):
+    #         step_max = self.loader_dict.get("step_max", self.loader_dict.get("steps", 15))
+            
+    #         common_args = {
+    #             "max_num_time_steps": step_max,
+    #             "time_step_size": 1,
+    #             "resolution": 128,
+    #             "in_dist": True,
+    #             "num_trajectories": -1, 
+    #             "time_input": 1,
+    #             "which": "test",
+    #         }
+    #         data_dir = f"{PROJECT_ROOT}/data"
+            
+    #         print(f"Initializing Index Dataset (loading all trajectories)...")
+    #         if "seismic" in self.which_name:
+    #             self._index_dataset = WaveSeismic(data_path=data_dir, **common_args)
+    #         else:
+    #             self._index_dataset = WaveGaussians(data_path=data_dir, **common_args)
+        
+    #     raw_sample = self._index_dataset[idx]
+        
+    #     t_scalar = raw_sample[0].unsqueeze(0).to(self.device)     # [1, 1]
+    #     x_input = raw_sample[1].unsqueeze(0).to(self.device)      # [1, C, H, W]
+        
+    #     # Extract c (Velocity). 
+    #     # Structure is [u, c, t]. C is at index 1.
+    #     c_velocity = x_input.squeeze().cpu().numpy()[1]          # [H, W]
+        
+    #     return t_scalar, x_input, c_velocity
 
 # --- FULL DIAGNOSTIC SUITE (FIXED) ---
 if __name__ == "__main__":
     # 1. SETUP
-    base_dir = f"{PROJECT_ROOT}/results/checkpoints/model_1401"
+    base_dir = f"{PROJECT_ROOT}/fwd_results/checkpoints/model_0903_newgauss"
     train_file = os.path.join(base_dir,  "training_properties.txt")
     net_file = os.path.join(base_dir, "net_architecture.txt")
-    ckpt = os.path.join(base_dir, "epoch=45-step=100096.ckpt")
+    ckpt = os.path.join(base_dir, "epoch=20-step=182784.ckpt")
 
     loader = WaveLoader(train_file, net_file, ckpt, which_name="wave_gauss")
     

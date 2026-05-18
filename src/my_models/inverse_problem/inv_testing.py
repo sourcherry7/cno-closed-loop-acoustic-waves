@@ -214,41 +214,184 @@ def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
 
     return model, test_dataset
 
+# -----------------------------------------------------------------------------
+# DIAGNOSTIC ADDITIONS
+# -----------------------------------------------------------------------------
+
+def plot_absolute_error_diagnostic(model, dataset, sample_idx, save_path):
+    """Plots Ground Truth, Prediction, and Absolute Error Heatmap on a unified scale."""
+    model.eval()
+    device = next(model.parameters()).device
+    
+    time_val, input_tensor, target_c = dataset[sample_idx]
+    time_tensor = torch.tensor([time_val], dtype=torch.float32).to(device)
+    input_batch = input_tensor.unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        prediction = model(input_batch, time_tensor)
+    
+    target_np = target_c[0].cpu().numpy()
+    pred_np = prediction[0, 0].cpu().numpy()
+    abs_error = np.abs(target_np - pred_np)
+    
+    # Calculate global min/max for a unified color scale
+    cmin = min(target_np.min(), pred_np.min())
+    cmax = max(target_np.max(), pred_np.max())
+    
+    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
+    
+    # Use vmin/vmax to lock the scale for Truth and Prediction
+    im0 = ax[0].imshow(target_np, cmap='jet', vmin=cmin, vmax=cmax)
+    ax[0].set_title("Ground Truth $c$")
+    fig.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
+    
+    im1 = ax[1].imshow(pred_np, cmap='jet', vmin=cmin, vmax=cmax)
+    ax[1].set_title("Predicted $\hat{c}$")
+    fig.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
+    
+    # Absolute Error keeps its own scale to highlight local discrepancies
+    im2 = ax[2].imshow(abs_error, cmap='inferno')
+    ax[2].set_title("Absolute Error $|c - \hat{c}|$")
+    fig.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Diagnostic error plot saved to: {save_path}")
+
+def plot_spectral_analysis(model, dataset, device, output_dir, num_samples=120):
+    """Performs Radial Averaged Power Spectrum analysis on test samples."""
+    model.eval()
+    all_raps_true = []
+    all_raps_pred = []
+    
+    print(f"Running spectral analysis on {num_samples} samples...")
+    
+    with torch.no_grad():
+        # We take one sample per unique velocity field (dt=9 is usually optimal)
+        for i in tqdm(range(num_samples)):
+            idx = i * 120 + 8 # Targeting dt=9
+            time_val, input_tensor, target_c = dataset[idx]
+            
+            time_tensor = torch.tensor([time_val], dtype=torch.float32).to(device)
+            input_batch = input_tensor.unsqueeze(0).to(device)
+            prediction = model(input_batch, time_tensor)
+            
+            true_img = target_c[0].cpu().numpy()
+            pred_img = prediction[0, 0].cpu().numpy()
+            
+            def get_raps(img):
+                # 2D FFT and Power Spectrum
+                f = np.fft.fft2(img)
+                fshift = np.fft.fftshift(f)
+                psd2d = np.abs(fshift)**2
+                
+                # Create radial grid
+                h, w = img.shape
+                yc, xc = h // 2, w // 2
+                y, x = np.indices(psd2d.shape)
+                r = np.sqrt((x - xc)**2 + (y - yc)**2)
+                r = r.astype(int)
+                
+                # Average bins
+                tbin = np.bincount(r.ravel(), psd2d.ravel())
+                nr = np.bincount(r.ravel())
+                radialprofile = tbin / nr
+                return radialprofile[:h//2]
+
+            all_raps_true.append(get_raps(true_img))
+            all_raps_pred.append(get_raps(pred_img))
+
+    # Convert to arrays and calculate statistics
+    raps_true = np.array(all_raps_true)
+    raps_pred = np.array(all_raps_pred)
+    
+    mean_true, std_true = np.mean(raps_true, axis=0), np.std(raps_true, axis=0)
+    mean_pred, std_pred = np.mean(raps_pred, axis=0), np.std(raps_pred, axis=0)
+    
+    freqs = np.arange(len(mean_true))
+    
+    plt.figure(figsize=(6, 4))
+    plt.plot(freqs, mean_true, label="Ground Truth", color="black", lw=2)
+    plt.fill_between(freqs, mean_true - std_true, mean_true + std_true, color="black", alpha=0.1)
+    
+    plt.plot(freqs, mean_pred, label="CNO Prediction", color="#f28e2b", lw=2)
+    plt.fill_between(freqs, mean_pred - std_pred, mean_pred + std_pred, color="#f28e2b", alpha=0.2)
+    
+    plt.yscale('log')
+    plt.xlabel("Spatial Frequency (radial bin)")
+    plt.ylabel("Power Spectral Density (Log Scale)")
+    plt.title("Radial Averaged Power Spectrum: $c$ vs $\hat{c}$")
+    plt.legend()
+    plt.grid(True, which="both", ls="-", alpha=0.2)
+    
+    save_path = f"{output_dir}/spectral_analysis_raps.pdf"
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Spectral analysis plot saved to: {save_path}")
 
 # -----------------------------------------------------------------------------
-# MAIN EXECUTION
+# UPDATED MAIN
 # -----------------------------------------------------------------------------
 def main(model_name, checkpoint_name, num_traj):
-    model, test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name = checkpoint_name, num_traj=num_traj)
+    model, test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name=checkpoint_name, num_traj=num_traj)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
-    # 5. Run Testing
+    
     output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
     os.makedirs(output_dir, exist_ok=True)
     
+    print("\n--- Running Diagnostics ---")
+    
+    # 1. New Absolute Error Heatmap for a random sample (e.g., sample 500)
+    
+    # 2. New Spectral Analysis across all test trajectories
+    plot_spectral_analysis(model, test_dataset, device, output_dir, num_samples=num_traj)
+    
+    # # Existing code for summary metrics and trajectory plots
     print("\nGenerating representative plots...")
-    
-    for traj in range(5):
+    for traj in range(5): # Reduced for brevity
         for dt in [1, 9]:
-            plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
-            print(f"Plotted trajctory {traj} at time pair (0, {dt}) and saved fig to: {output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
+            plot_absolute_error_diagnostic(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/diagnostic_abs_error_{traj}_dt_{dt}.pdf")
+            # plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
 
-    metrics = calculate_test_metrics(model, test_dataset, device)
-    summarize_and_save(metrics, output_dir)
+    # metrics = calculate_test_metrics(model, test_dataset, device)
+    # summarize_and_save(metrics, output_dir)
+# -----------------------------------------------------------------------------
+# MAIN EXECUTION
+# -----------------------------------------------------------------------------
+# def main(model_name, checkpoint_name, num_traj):
+#     model, test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name = checkpoint_name, num_traj=num_traj)
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model.to(device).eval()
+#     # 5. Run Testing
+#     output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
+#     os.makedirs(output_dir, exist_ok=True)
+    
+#     print("\nGenerating representative plots...")
+    
+#     for traj in range(5):
+#         for dt in [1, 9]:
+#             plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
+#             print(f"Plotted trajctory {traj} at time pair (0, {dt}) and saved fig to: {output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
+
+#     metrics = calculate_test_metrics(model, test_dataset, device)
+#     summarize_and_save(metrics, output_dir)
 
     
-    df = pd.read_csv(f'{output_dir}/test_metrics_summary.csv')
-    df = df.iloc[:-1]
-    plt.figure(figsize=(6, 3.5))
-    plt.bar(df["dt"], df["rel_l2"], color='#f28e2b')
-    plt.xlabel("Time Step Gap (dt)")
-    plt.ylabel("Mean Relative L2 Error")
-    plt.title("Error vs Snapshot Separation")
-    plt.grid(axis='y', alpha=0.3)
-    plt.tight_layout(pad=1.1)
-    plt.savefig(f"{output_dir}/error_by_dt.pdf")
-    plt.close()
-    print(f'Saved error graph to {output_dir}/error_by_dt.pdf')
+#     df = pd.read_csv(f'{output_dir}/test_metrics_summary.csv')
+#     df = df.iloc[:-1]
+#     plt.figure(figsize=(6, 3.5))
+#     plt.bar(df["dt"], df["rel_l2"], color='#f28e2b')
+#     plt.xlabel("Time Step Gap (dt)")
+#     plt.ylabel("Mean Relative L2 Error")
+#     plt.title("Error vs Snapshot Separation")
+#     plt.grid(axis='y', alpha=0.3)
+#     plt.tight_layout(pad=1.1)
+#     plt.savefig(f"{output_dir}/error_by_dt.pdf")
+#     plt.close()
+#     print(f'Saved error graph to {output_dir}/error_by_dt.pdf')
 
 
 if __name__ == "__main__":

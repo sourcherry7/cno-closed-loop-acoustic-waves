@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=cno_train
-#SBATCH --output=results/logs/%j.out     # STDOUT log file
-#SBATCH --error=results/logs/%j.err      # STDERR log file
-#SBATCH --time=06:30:00                  # 6 hours 30 min
+#SBATCH --output=fwd_results/logs/%j.out     # STDOUT log file
+#SBATCH --error=fwd_results/logs/%j.err      # STDERR log file
+#SBATCH --time=24:00:00                  # 24h
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8                # 8 CPU cores
 #SBATCH --mem-per-cpu=8G                 # 8GB RAM
