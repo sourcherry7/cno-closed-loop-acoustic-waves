@@ -298,19 +298,19 @@ def _test_pattern(model, testing_loader, batch_size=10, time_steps=15, dt=1, max
                 u_s_phys = (pred_norm[:, 0:1] * stats['std_u']) + stats['mean_u']
                 u_gt_phys = (out_norm[:, 0:1] * stats['std_u']) + stats['mean_u']
 
-                # --- 4. ENERGY TRACKING ---
-                e_s = compute_energy(u_s_phys, u_prev_s_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
-                e_gt = compute_energy(u_gt_phys, u_prev_gt_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
+                # # --- 4. ENERGY TRACKING ---
+                # e_s = compute_energy(u_s_phys, u_prev_s_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
+                # e_gt = compute_energy(u_gt_phys, u_prev_gt_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
                 
-                batch_energy_s.append(e_s)
-                batch_energy_gt.append(e_gt)
+                # batch_energy_s.append(e_s)
+                # batch_energy_gt.append(e_gt)
 
                 # Update physical previous states for next derivative
                 u_prev_s_phys, u_prev_gt_phys = u_s_phys.clone(), u_gt_phys.clone()
 
-                # Phase Shift Calculation
-                shifts = [compute_phase_shift(pred_norm[:, 0:1][b], out_norm[:, 0:1][b]) for b in range(curr_b_size)]
-                batch_phases.append(torch.tensor(shifts))
+                # # Phase Shift Calculation
+                # shifts = [compute_phase_shift(pred_norm[:, 0:1][b], out_norm[:, 0:1][b]) for b in range(curr_b_size)]
+                # batch_phases.append(torch.tensor(shifts))
 
                 # --- 5. NUMERICAL ERROR CALCULATION ---
                 if not separate_var:
@@ -329,27 +329,27 @@ def _test_pattern(model, testing_loader, batch_size=10, time_steps=15, dt=1, max
                 # Autoregressive Feedback
                 inp[:, 0:1] = pred_norm[:, 0:1]
 
-            # Collect Batch Results
-            energy_history_s.append(torch.stack(batch_energy_s).cpu().numpy())
-            energy_history_gt.append(torch.stack(batch_energy_gt).cpu().numpy())
-            phase_history.append(torch.stack(batch_phases).cpu().numpy())
+            # # Collect Batch Results
+            # energy_history_s.append(torch.stack(batch_energy_s).cpu().numpy())
+            # energy_history_gt.append(torch.stack(batch_energy_gt).cpu().numpy())
+            # phase_history.append(torch.stack(batch_phases).cpu().numpy())
             
             E_l1 = np.concatenate((E_l1, E_curr_l1), axis=-1)
             E_l2 = np.concatenate((E_l2, E_curr_l2), axis=-1)
             E_abs = np.concatenate((E_abs, E_curr_abs), axis=-1)
 
-    # --- 6. AGGREGATED REPORT GENERATION ---
-    full_e_s = np.concatenate(energy_history_s, axis=1)
-    full_e_gt = np.concatenate(energy_history_gt, axis=1)
+    # # --- 6. AGGREGATED REPORT GENERATION ---
+    # full_e_s = np.concatenate(energy_history_s, axis=1)
+    # full_e_gt = np.concatenate(energy_history_gt, axis=1)
     
-    # A: Comparative Energy Plot (Decay Profiles)
-    plot_comparative_energy(full_e_s, full_e_gt, os.path.join(folder, "energy_decay_comparison.pdf"))
+    # # A: Comparative Energy Plot (Decay Profiles)
+    # plot_comparative_energy(full_e_s, full_e_gt, os.path.join(folder, "energy_decay_comparison.pdf"))
     
-    # B: Consistency Ratio Plot (The "Raonic Diagnostic")
-    plot_energy_consistency_ratio(full_e_s, full_e_gt, os.path.join(folder, "energy_consistency_ratio.pdf"))
+    # # B: Consistency Ratio Plot (The "Raonic Diagnostic")
+    # plot_energy_consistency_ratio(full_e_s, full_e_gt, os.path.join(folder, "energy_consistency_ratio.pdf"))
     
-    # C: Phase Drift Plot
-    plot_phase_drift(np.concatenate(phase_history, axis=1), os.path.join(folder, "phase_drift.pdf"))
+    # # C: Phase Drift Plot
+    # plot_phase_drift(np.concatenate(phase_history, axis=1), os.path.join(folder, "phase_drift.pdf"))
     
     return T, E_l1, E_l2, E_abs
 
