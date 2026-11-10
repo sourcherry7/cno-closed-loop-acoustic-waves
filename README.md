@@ -104,6 +104,10 @@ it less accuracy than it costs the FDTD solver (+4 vs. +6 percentage points).
 
 Details and licences: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
+**AI assistance.** Parts of the code were written with the help of AI coding
+assistants. The repository was restructured and cleaned up for this public
+release with Claude; those commits are marked as co-authored.
+
 ## Repository layout
 
 ```
@@ -142,6 +146,10 @@ python -m cno_closed_loop.inverse.evaluate                 # inverse diagnostics
 python -m cno_closed_loop.closed_loop.compare_cno_vs_fdtd  # closed loop, CNO vs. FDTD (GPU)
 python -m cno_closed_loop.closed_loop.fdtd_floor           # FDTD error floor (CPU, ~2 min)
 ```
+
+Optional extras: `PHYSICS_DIAGNOSTICS = True` in `forward/evaluate_rollout.py` adds the energy
+and phase-drift diagnostics, and `SAVE_TRAJECTORY_PLOTS = True` in `closed_loop/resimulate_fdtd.py`
+saves per-trajectory figures.
 
 On a SLURM cluster, submit from the repository root:
 `mkdir -p results/logs && VENV=/path/to/venv sbatch scripts/slurm/train_forward.sh`

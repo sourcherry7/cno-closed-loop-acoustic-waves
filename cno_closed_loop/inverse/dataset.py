@@ -5,20 +5,17 @@
 # Changes: reads the HDF5 Wave-Gauss data and returns two normalized wavefield
 # snapshots plus the time gap as input, and the normalized velocity field as label.
 
-import os
-import sys
 import h5py
 import json
 import torch
-import numpy as np
-
 
 from cno_closed_loop import paths
-
 from DataLoaders.CNO_TimeLoaders import BaseTimeDataset
 
 
 class InverseWaveGaussians(BaseTimeDataset):
+    """Samples (dt, [u(t1), u(t2), dt-channel], c) for all allowed time pairs of each trajectory."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -27,6 +24,7 @@ class InverseWaveGaussians(BaseTimeDataset):
 
         tot_n_samples = self.reader['u'].shape[0]
 
+        # Scale the upstream split sizes (60 val / 240 test of 10,512 trajectories) to this dataset
         train_val_test_scale_factor = tot_n_samples / 10512.0
         
         self.N_max = tot_n_samples
@@ -38,25 +36,22 @@ class InverseWaveGaussians(BaseTimeDataset):
         with open(NORM_JSON_PATH, "r") as f:
             json_constants = json.load(f)
 
-
         self.constants = {
-            "mean": json_constants['mean_u'], # 0.0334376316,
-            "std": json_constants['std_u'], # 0.1171879068,
-            "mean_c": json_constants['mean_c'], # 2618.4593933,
-            "std_c": json_constants['std_c'], # 601.51658913,
-            "time": float(json_constants['time_steps']) # 15.0,
+            "mean": json_constants['mean_u'],
+            "std": json_constants['std_u'],
+            "mean_c": json_constants['mean_c'],
+            "std_c": json_constants['std_c'],
+            "time": float(json_constants['time_steps']),
         }
 
-        self.input_dim = 2 # now it's ut1 and ut2 instead of u, c. dt will be appended later
+        self.input_dim = 2 # u(t1) and u(t2); dt is appended as a third channel
         self.label_description = "[c]"
         self.time_input = True
 
         assert self.max_num_time_steps <= json_constants['time_steps']
         assert self.max_num_time_steps * self.time_step_size <= 15
 
-
         self.post_init()
-
 
     def __getitem__(self, idx):
         i = idx // self.multiplier # select trajectory
@@ -102,8 +97,7 @@ class InverseWaveGaussians(BaseTimeDataset):
         return time, inputs, labels
 
 
-
-    
+# Quick check of shapes and value ranges
 if __name__ == "__main__":
 
     ds = InverseWaveGaussians(
@@ -118,22 +112,22 @@ if __name__ == "__main__":
 
     print(f"total loaded samples: {len(ds)}")
 
-    # 2. Test a single item retrieval
+    # One sample
     time_val, input_tensor, label_tensor = ds[0]
 
-    print("\n--- Single Item Check ---")
+    print("\nSingle sample:")
     print(f"Time (normalized): {time_val:.4f}")
     print(f"Input Shape:  {input_tensor.shape}")  # Expected: [3, 128, 128]
     print(f"Label Shape:  {label_tensor.shape}")  # Expected: [1, 128, 128]
     print(f"Input Range:  {input_tensor.min():.2f} to {input_tensor.max():.2f}")
     print(f"Label Range:  {label_tensor.min():.2f} to {label_tensor.max():.2f}")
 
-    # 3. Test the DataLoader (Batching)
+    # One batch
     from torch.utils.data import DataLoader
     loader = DataLoader(ds, batch_size=4, shuffle=True)
     
     batch_time, batch_in, batch_label = next(iter(loader))
-    print("\n--- Batch Check ---")
+    print("\nBatch:")
     print(f"Batch Input Shape: {batch_in.shape}") # Expected: [4, 3, 128, 128]
     print(f"Batch Label Shape: {batch_label.shape}") # Expected: [4, 1, 128, 128]
     

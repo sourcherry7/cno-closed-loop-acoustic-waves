@@ -5,14 +5,9 @@
 #   _load_inverse_dataset follows DataLoaders/load_utils.py::_load_dataset
 # Changes: inverse-problem I/O (inputs u(t1), u(t2), dt; output c) for the Wave-Gauss data.
 
-import os
-import sys
-import h5py
-import torch
-import numpy as np
-
 from cno_closed_loop import paths
 from cno_closed_loop.inverse.dataset import InverseWaveGaussians
+
 
 def _load_inverse_dataset(dic, 
                   which, 
@@ -21,11 +16,9 @@ def _load_inverse_dataset(dic,
                   out_dim,
                   masked_input = None,
                   fix_input_to_time_step = None):
-    
+    """Inverse-problem dataset for the given split ("train", "val" or "test")."""
     num_samples = dic["num_samples"]
-
-    
-    print("WHICH: ", which, " NUM_SAMPLES: ", num_samples)
+    print(f"Inverse dataset '{which}' ({which_loader}): {num_samples} trajectories")
 
     if which == "wave_gauss":
         train_dataset =   InverseWaveGaussians(max_num_time_steps = dic["time_steps"], 
@@ -39,14 +32,14 @@ def _load_inverse_dataset(dic,
                                         time_input = dic["time_input"],
                                         masked_input = masked_input,
                                         allowed_transitions = dic["allowed_tran"])
-
-
     else:
         raise ValueError("Not implemented experiment")
 
     return train_dataset
 
+
 def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
+    """Experiment configuration for the inverse problem, from a run's property files."""
     d = dict()
 
     d["which"] = which_example
@@ -54,7 +47,6 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
     for file in files:
         with open(file) as f:
             lines = f.readlines()
-        f.close()
         
         for line in lines:
             l = line.strip().split(",")
@@ -137,12 +129,12 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
 
     if which_example in ['wave_gauss']:
         d['in_dim'] = 3 # inputs: u(t1), u(t2) and dt = t2 - t1
-        d['out_dim'] = 1 # the output dim is one -> predict only c
+        d['out_dim'] = 1 # output: c
         d['separate'] = False
-        d["separate_dim"] = [1] # there is no separate physical quantity, only c
+        d["separate_dim"] = [1] # a single output quantity
 
         d['nmax'] = 10512
-        d['step_max'] = 15 # specific for Gauss
+        d['step_max'] = 15 # time steps of the Wave-Gauss trajectories
     
     else:
         raise ValueError("Please specify different benchmark")
@@ -154,7 +146,6 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
 
     d["time_steps"] = steps
     _allowed = []
-    print("STEPS", d["time_steps"])
     d["allowed"] = 'all'
     if d['allowed'] == 'all':
         for t in range(1,d["time_steps"]+1):
@@ -162,7 +153,6 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
     elif d['allowed'] == 'one':
         _allowed = [1]
     d["allowed_transitions"] = _allowed
-    print(_allowed)
     if "exp" not in d:
         d["exp"] = 1
 

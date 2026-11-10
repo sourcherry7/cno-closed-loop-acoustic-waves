@@ -7,25 +7,22 @@ Run from the repository root:  python -m cno_closed_loop.closed_loop.resimulate_
 """
 
 import os
-import sys
 import torch
 import time
 import numpy as np
 import json
 import matplotlib.pyplot as plt
 
-# Imports
 from cno_closed_loop import paths
 from cno_closed_loop.inverse.evaluate import make_test_dataset_from_ckpt
 from seismic_CPML_2D_pressure_second_order import seismicCPML2D  # vendored FDTD solver (external/seismic_cpml)
 
 
-
 def get_cno_prediction(model, dataset, traj_id, dt_gap):
-    """
-    Consolidates logic to get CNO prediction and the Ground Truth trajectory.
-    """
+    """Inverse-CNO estimate of c from (u(t=0), u(t=dt_gap)) of a test trajectory, plus its ground truth.
 
+    Uses the module-level `device` set in __main__.
+    """
     sample_idx = traj_id * 120 + dt_gap - 1 
     time_val, input_tensor, target_c_norm = dataset[sample_idx]
     
@@ -38,8 +35,7 @@ def get_cno_prediction(model, dataset, traj_id, dt_gap):
     c_pred_norm = prediction_norm[0, 0].cpu().numpy()
     c_gt_norm = target_c_norm[0].cpu().numpy()
     
-    # Extract the full 16 frames directly from the reader. 
-    # This data is ALREADY IN PHYSICAL UNITS (unnormalized).
+    # Ground-truth trajectory, all 16 snapshots, in physical units
     i = sample_idx // dataset.multiplier
     h5_idx = i + dataset.start
     u_gt_traj_phys = dataset.reader['u'][h5_idx]
@@ -48,10 +44,7 @@ def get_cno_prediction(model, dataset, traj_id, dt_gap):
 
 
 def denormalize_velocity(c_norm, data_path):
-    """
-    Translates normalized Neural output back into Physical units for the solver.
-    (We no longer need to pass 'u' here, as we pull it physically from the start).
-    """
+    """Normalized velocity field -> m/s, clipped to the range of the dataset."""
     json_path = os.path.join(data_path, "new_normalization_stats.json")
     with open(json_path, 'r') as f:
         stats = json.load(f)
@@ -63,13 +56,9 @@ def denormalize_velocity(c_norm, data_path):
 
 
 def run_physics_validation(c_phys, u0_phys):
-    """
-    Step 4: Feeds the physical velocity and initial wavefield back into the numerical solver.
-    """
-
-    # 1. Match Physical Parameters to the 128x128 CNO space
+    """FDTD resimulation on the 128x128 grid (dx = 40 m) from u0 with velocity c; returns the 16 stored snapshots."""
     NX, NY = 128, 128
-    DELTAX, DELTAY = 40, 40 # Scaled up from 20 because resolution is halved (256 -> 128)
+    DELTAX, DELTAY = 40, 40 # 20 m at 256x256 -> 40 m at 128x128
     DELTAT = 0.002 # Same dt as generation
     d_steps = 40
     n_steps = 15
@@ -78,42 +67,37 @@ def run_physics_validation(c_phys, u0_phys):
     f0 = 0.5
     dtype = np.float32
 
-    # 2. Setup Solver Inputs
     density = np.ones((NX, NY), dtype=dtype)
     # The solver expects (past_pressure, present_pressure).
     # As in the data generation, u0 is passed for both time levels (the wavefield starts at rest).
     initial_pressures = (u0_phys.astype(dtype), u0_phys.astype(dtype))
 
-    # 3. Run the Physics Simulation
-    print("Running seismicCPML2D numerical resimulation...")
     wavefields, _ = seismicCPML2D(
-    NX=NX, NY=NY, NSTEPS=NSTEPS,
-    DELTAX=DELTAX, DELTAY=DELTAY, DELTAT=DELTAT,
-    NPOINTS_PML=NPOINTS_PML,
-    velocity=c_phys.astype(dtype),
-    density=density,
-    initial_pressures=initial_pressures,
-    f0=f0, dtype=dtype,
-    output_wavefields=True, gather_is=None
+        NX=NX, NY=NY, NSTEPS=NSTEPS,
+        DELTAX=DELTAX, DELTAY=DELTAY, DELTAT=DELTAT,
+        NPOINTS_PML=NPOINTS_PML,
+        velocity=c_phys.astype(dtype),
+        density=density,
+        initial_pressures=initial_pressures,
+        f0=f0, dtype=dtype,
+        output_wavefields=True, gather_is=None
     )
 
-    # 4. Time-Domain Downsampling
-    # Extract the 15 frames exactly as the generation script did
+    # Keep every 40th step, as in the data generation (16 snapshots)
     u_resimulated_trajectory = wavefields[::d_steps]
 
     return u_resimulated_trajectory
 
+
 def plot_trajectories_side_by_side(u_gt_traj, u_resim_traj, save_path):
-    """
-    Plots the Ground Truth and Resimulated trajectories back-to-back.
-    """
-    # Use global min/max across BOTH trajectories for a fair visual comparison
+    """Ground-truth (rows 0-3) and resimulated (rows 4-7) snapshots on a shared colour scale."""
+    # Shared colour scale for both trajectories
     u_min = min(np.min(u_gt_traj), np.min(u_resim_traj))
     u_max = max(np.max(u_gt_traj), np.max(u_resim_traj))
     
     fig, axes = plt.subplots(8, 4, figsize=(20, 32))
     
-    # Plot Ground Truth (Rows 0-3)
+    # Ground truth (rows 0-3)
     for i in range(16):
         row, col = i // 4, i % 4
         ax = axes[row, col]
@@ -122,7 +106,7 @@ def plot_trajectories_side_by_side(u_gt_traj, u_resim_traj, save_path):
         ax.set_xticks([]); ax.set_yticks([])
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    # Plot Resimulation (Rows 4-7)
+    # Resimulation (rows 4-7)
     for i in range(16):
         row, col = (i // 4) + 4, i % 4
         ax = axes[row, col]
@@ -138,15 +122,13 @@ def plot_trajectories_side_by_side(u_gt_traj, u_resim_traj, save_path):
 
 
 def calculate_and_plot_errors(u_gt_traj, u_resim_traj, save_path):
-    """
-    Calculates and plots step-by-step, cumulative, and total Relative L2 errors.
-    """
+    """Per-step and cumulative relative L2 error of one resimulated trajectory (printed and plotted)."""
     eps = 1e-8
     step_errors = []
     cum_num, cum_den = 0.0, 0.0
     cum_errors = []
 
-    print("\n--- Error Report ---")
+    print("\nRelative L2 error per step:")
     print(f"{'Step':<5} | {'Step Error':<12} | {'Cum. Error':<12}")
     print("-" * 35)
 
@@ -171,9 +153,8 @@ def calculate_and_plot_errors(u_gt_traj, u_resim_traj, save_path):
         
     total_error = cum_errors[-1]
     print("-" * 35)
-    print(f"TOTAL RELATIVE L2 ERROR: {total_error:.4f}\n")
+    print(f"Cumulative relative L2 error at the last step: {total_error:.4f}\n")
     
-    # Plotting
     plt.figure(figsize=(8, 5))
     plt.plot(range(16), step_errors, label='Step-by-Step Error', marker='o', color='#1f77b4')
     plt.plot(range(16), cum_errors, label='Cumulative Error', marker='s', color='#ff7f0e')
@@ -189,114 +170,71 @@ def calculate_and_plot_errors(u_gt_traj, u_resim_traj, save_path):
     print(f"Error plot saved to: {save_path}")
     return total_error
 
-if __name__ == "__main__":
 
-    dt = 9
+if __name__ == "__main__":
+    dt = 9                         # the inverse CNO sees the snapshot pair (t = 0, t = dt)
     num_test_trajectories = 120
-    total_errors = []
+    SAVE_TRAJECTORY_PLOTS = False  # per-trajectory figures as in the report appendix (2 PDFs each)
     all_cum_errors = []
 
-    print(f"Starting closed-loop evaluation for {num_test_trajectories} trajectories at dt={dt}...")
+    print(f"Closed loop with FDTD: {num_test_trajectories} test trajectories, dt = {dt}")
     start_time = time.time()
 
-    test_num_traj = 120
-    model, dataset = make_test_dataset_from_ckpt(model_name=paths.INVERSE_RUN, checkpoint_name=paths.INVERSE_CKPT, num_traj=test_num_traj)
-    
+    model, dataset = make_test_dataset_from_ckpt(model_name=paths.INVERSE_RUN, checkpoint_name=paths.INVERSE_CKPT, num_traj=num_test_trajectories)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
 
+    out_dir = str(paths.RESULTS_DIR / "closed_loop")
+    os.makedirs(out_dir, exist_ok=True)
+
     for traj in range(num_test_trajectories):
-        print("--- STEP 1 & 2: CNO Inference ---")
+        # Inverse-CNO estimate of c, in m/s for the solver
         c_pred_norm, c_gt_norm, u_gt_traj_phys, dat_path = get_cno_prediction(
             model=model,
             dataset=dataset,
             traj_id=traj,
             dt_gap=dt
         )
-        
-        print("--- STEP 3: Denormalization to Physics ---")
         c_pred_phys = denormalize_velocity(c_norm=c_pred_norm, data_path=dat_path)
         
-        # We take the exact physical starting frame from the raw ground truth trajectory
+        # FDTD resimulation from the true initial wavefield
         u0_phys = u_gt_traj_phys[0]
-        
-        print("--- STEP 4: Numerical Resimulation ---")
         u_resim_trajectory = run_physics_validation(c_phys=c_pred_phys, u0_phys=u0_phys)
         
-        print(f"\nSuccess! Recovered trajectory shape: {u_resim_trajectory.shape}")
-
-        print("--- STEP 5: Plotting Results ---")
-        
-        # De-normalize GT velocity for accurate tracking
-        json_path = os.path.join(dat_path, "new_normalization_stats.json")
-        with open(json_path, 'r') as f:
-            stats = json.load(f)
-        c_gt_phys = (c_gt_norm * stats['std_c']) + stats['mean_c']
-        
-        out_dir = str(paths.RESULTS_DIR / "closed_loop")
-        os.makedirs(out_dir, exist_ok=True)
-        
-        # 3. Calculate Step-by-Step Cumulative Error (Fast NumPy Vectorization)
+        # Cumulative relative L2 error over time
         eps = 1e-8
-        
-        # Sum the squares spatially (over X and Y) for each time step -> Shape: (16,)
-        diff_sq_per_step = np.sum((u_resim_trajectory - u_gt_traj_phys)**2, axis=(1, 2))
+        diff_sq_per_step = np.sum((u_resim_trajectory - u_gt_traj_phys)**2, axis=(1, 2))  # [16]
         gt_sq_per_step = np.sum(u_gt_traj_phys**2, axis=(1, 2))
-        
-        # Cumulative sum over time -> Shape: (16,)
         cum_diff_sq = np.cumsum(diff_sq_per_step)
         cum_gt_sq = np.cumsum(gt_sq_per_step)
-        
-        # Final cumulative error curve for THIS trajectory
         traj_cum_errors = np.sqrt(cum_diff_sq) / (np.sqrt(cum_gt_sq) + eps)
-        
         all_cum_errors.append(traj_cum_errors)
 
-        # Print the FINAL total error for this specific trajectory to track progress
-        print(f"Traj {traj+1:03d}/{num_test_trajectories} | Final L2 Error: {traj_cum_errors[-1]:.4f}")
+        print(f"Trajectory {traj+1:03d}/{num_test_trajectories}: final cumulative L2 error {traj_cum_errors[-1]:.4f}")
 
-
-        # Optional per-trajectory figures (as in the report appendix):
-        # comparison_save_file = f"{out_dir}/resimulation_vs_gt_traj{traj}_dt{dt}.pdf"
-        
-        # plot_trajectories_side_by_side(
-        #     u_gt_traj=u_gt_traj_phys,
-        #     u_resim_traj=u_resim_trajectory, 
-        #     save_path=comparison_save_file
-        # )
-
-        # # Calculate and plot errors
-        # error_save_file = f"{out_dir}/resimulation_errors_traj{traj}_dt{dt}.pdf"
-        # calculate_and_plot_errors(
-        #     u_gt_traj=u_gt_traj_phys, 
-        #     u_resim_traj=u_resim_trajectory, 
-        #     save_path=error_save_file
-        # )
+        if SAVE_TRAJECTORY_PLOTS:
+            plot_trajectories_side_by_side(
+                u_gt_traj=u_gt_traj_phys,
+                u_resim_traj=u_resim_trajectory, 
+                save_path=f"{out_dir}/resimulation_vs_gt_traj{traj}_dt{dt}.pdf"
+            )
+            calculate_and_plot_errors(
+                u_gt_traj=u_gt_traj_phys, 
+                u_resim_traj=u_resim_trajectory, 
+                save_path=f"{out_dir}/resimulation_errors_traj{traj}_dt{dt}.pdf"
+            )
     
-    all_cum_errors = np.array(all_cum_errors) # Shape: (120, 16)
-    
-    mean_cum_errors = np.mean(all_cum_errors, axis=0) # Shape: (16,)
-    std_cum_errors = np.std(all_cum_errors, axis=0)   # Shape: (16,)
+    all_cum_errors = np.array(all_cum_errors) # [120, 16]
+    mean_cum_errors = np.mean(all_cum_errors, axis=0)
+    std_cum_errors = np.std(all_cum_errors, axis=0)
     
     elapsed = (time.time() - start_time) / 60
-    
-    print("\n========================================")
-    print(f"EVALUATION COMPLETE ({elapsed:.1f} minutes)")
-    print("========================================")
-    print(f"Average Final Cumulative Error: {mean_cum_errors[-1]:.4f} ± {std_cum_errors[-1]:.4f}")
-    print("========================================")
+    print(f"\nDone in {elapsed:.1f} min. Final cumulative relative L2 error: {mean_cum_errors[-1]:.4f} ± {std_cum_errors[-1]:.4f}")
 
-    # --- 5. PLOT THE AVERAGE CURVE ---
-    out_dir = str(paths.RESULTS_DIR / "closed_loop")
-    os.makedirs(out_dir, exist_ok=True)
-    
+    # Mean cumulative error over time with a 1-std band across the trajectories
     plt.figure(figsize=(8, 5))
     steps = np.arange(16)
-    
-    # Plot the mean line
     plt.plot(steps, mean_cum_errors, label='Mean Cumulative Error', color='#ff7f0e', linewidth=2, marker='o')
-    
-    # Add a shaded region for the standard deviation (shows variance across the 120 samples)
     plt.fill_between(steps, 
                      mean_cum_errors - std_cum_errors, 
                      mean_cum_errors + std_cum_errors, 
@@ -312,4 +250,4 @@ if __name__ == "__main__":
     plot_path = f"{out_dir}/average_cum_error_dt{dt}.pdf"
     plt.savefig(plot_path)
     plt.close()
-    print(f"Saved average error plot to: {plot_path}")
+    print(f"Saved {plot_path}")

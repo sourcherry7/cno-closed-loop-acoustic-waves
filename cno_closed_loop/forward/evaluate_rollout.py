@@ -1,21 +1,17 @@
 """Autoregressive rollout evaluation of the forward CNO on the 120 test trajectories.
 
 Rolls the trained forward model out from u(t=0) with the true velocity field and
-writes relative L1/L2 and absolute errors per step (the report's forward results);
-energy and phase-drift diagnostics are implemented in ``_test_pattern``.
+writes relative L1/L2 and absolute errors per step (the report's forward results).
+Optionally (PHYSICS_DIAGNOSTICS) it also tracks the discrete wave energy and the
+phase drift of the predicted wavefronts.
 Run from the repository root:  python -m cno_closed_loop.forward.evaluate_rollout
 """
 
 import os
-import sys
 import torch
-import torch.nn as nn
 import numpy as np
-import copy
-import time
 import json
 import matplotlib.pyplot as plt
-from torch.nn import functional as F
 from scipy.signal import correlate2d
 
 from cno_closed_loop import paths
@@ -30,7 +26,7 @@ def load_json_stats(data_path):
         return json.load(f)
 
 def _write_in_file(file_name, test_dic, E_l1, E_l2, E_abs, times, pattern, separate_var=False, num_var=0):
-    """Writes results to file including mean, median, absolute, and standard deviation metrics."""
+    """Write median/mean/std of the relative L1 and L2 errors and the absolute error per step."""
     print(f"Writing results to {file_name}")
     with open(file_name, "w") as file:
         max_steps = int(float(test_dic["step_max"]))
@@ -68,31 +64,27 @@ def _write_in_file(file_name, test_dic, E_l1, E_l2, E_abs, times, pattern, separ
 
 
 def plot_comparative_energy(energy_s, energy_gt, save_path):
+    """Relative energy E_t / E_0 of the CNO rollout and of the ground truth.
+
+    energy_s, energy_gt: [time_steps, num_samples]
     """
-    Plots Surrogate vs Ground Truth energy stability for report comparison.
-    energy_s, energy_gt shape: [Time_Steps, Num_Samples]
-    """
-    # 1. Normalize both by their own initial energy at t=0
+    # Normalize each trajectory by its own energy at t = 0
     rel_s = energy_s / (energy_s[0, :] + 1e-10)
     rel_gt = energy_gt / (energy_gt[0, :] + 1e-10)
     
-    # 2. Compute statistics across the 120 trajectories
     m_s, s_s = np.mean(rel_s, axis=1).squeeze(), np.std(rel_s, axis=1).squeeze()
     m_gt, s_gt = np.mean(rel_gt, axis=1).squeeze(), np.std(rel_gt, axis=1).squeeze()
     steps = np.arange(len(m_s))
 
     plt.figure(figsize=(10, 6))
     
-    # Plot Ground Truth (The "Physical Target")
     plt.plot(steps, m_gt, label='FDTD Ground Truth', color='black', linestyle='--', linewidth=2, alpha=0.8)
     plt.fill_between(steps, m_gt - s_gt, m_gt + s_gt, color='black', alpha=0.1)
     
-    # Plot Surrogate (The CNO Prediction)
     plt.plot(steps, m_s, label='CNO Surrogate', color='#1f77b4', linewidth=2)
     plt.fill_between(steps, m_s - s_s, m_s + s_s, color='#1f77b4', alpha=0.2)
 
-    # Scientific Formatting
-    plt.axhline(y=1.0, color='red', linestyle=':', label='Ideal Hamiltonian')
+    plt.axhline(y=1.0, color='red', linestyle=':', label='Energy conservation')
     plt.xlabel("Rollout Step (Autoregressive)")
     plt.ylabel("Relative Total Energy ($E_t / E_0$)")
     plt.grid(True, which='both', alpha=0.3, linestyle=':')
@@ -100,112 +92,62 @@ def plot_comparative_energy(energy_s, energy_gt, save_path):
     
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
-    print(f"[Visuals] Comparative energy plot saved to {save_path}")
+    print(f"Saved {save_path}")
 
 def compute_energy(u_curr, u_prev, c_phys, dx=20.0, dt_neural=0.08):
+    """Discrete wave energy E = 0.5 * mean( (u_t / c)^2 + |grad u|^2 ).
+
+    u_curr, u_prev: [batch, 1, H, W] wavefields in physical units
+    c_phys:         [batch, 1, H, W] velocity in m/s
     """
-    Approximates the physical Hamiltonian: E = 0.5 * integral( (1/c^2)u_t^2 + |grad u|^2 )
-    
-    u_curr, u_prev: [Batch, 1, H, W] (Physical units)
-    c_phys: [Batch, 1, H, W] (m/s)
-    """
-    # 1. Kinetic Energy: 0.5 * (1/c^2) * (du/dt)^2
-    # dt_neural (0.08) is the jump the model is responsible for.
+    # Kinetic term, with u_t from the difference over one model step (dt_neural)
     u_t = (u_curr - u_prev) / dt_neural
     ke_density = 0.5 * (u_t / (c_phys + 1e-8))**2
     ke = torch.mean(ke_density, dim=(-3, -2, -1))
     
-    # 2. Potential Energy: 0.5 * |grad u|^2
-    # Scaling by dx (20.0) ensures the gradient is in physical units (Pressure/meter)
+    # Potential term, with the gradient in physical units (dx in m)
     grad_x = ((u_curr[:, :, 1:, :] - u_curr[:, :, :-1, :]) / dx)**2
     grad_y = ((u_curr[:, :, :, 1:] - u_curr[:, :, :, :-1]) / dx)**2
     pe_density = 0.5 * (torch.mean(grad_x, dim=(-3, -2, -1)) + torch.mean(grad_y, dim=(-3, -2, -1)))
     
     return ke + pe_density
 
-def plot_energy_decay(energy_matrix, save_path):
-    """
-    Plots mean energy loss over time with a 1-std deviation shaded area.
-    energy_matrix shape: [Time_Steps (T+1), Num_Samples]
-    """
-    # Normalize energy by initial energy (t=0) to see relative loss/gain
-    initial_energy = energy_matrix[0, :]
-    relative_energy = energy_matrix / (initial_energy + 1e-10)
-    
-    mean_energy = np.mean(relative_energy, axis=1).squeeze()
-    std_energy = np.std(relative_energy, axis=1).squeeze()
-    time_steps = np.arange(len(mean_energy))
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(time_steps, mean_energy, label='Mean Relative Energy', color='blue', linewidth=2)
-    plt.fill_between(time_steps, 
-                     mean_energy - std_energy, 
-                     mean_energy + std_energy, 
-                     color='blue', alpha=0.2, label='$\pm 1\sigma$ deviation')
-    
-    plt.axhline(y=1.0, color='red', linestyle='--', label='Ideal Conservation')
-    plt.title("Physical Fidelity: Energy Stability (15-step Rollout)")
-    plt.xlabel("Rollout Step")
-    plt.ylabel("Relative Energy ($E_t / E_0$)")
-    plt.legend(); plt.grid(True, alpha=0.3)
-    plt.savefig(save_path); plt.close()
-    print(f"[Visuals] Energy plot saved to {save_path}")
-
-
 def plot_energy_consistency_ratio(energy_s, energy_gt, save_path):
+    """Ratio of CNO energy to ground-truth energy per step (ideally 1).
+
+    energy_s, energy_gt: [time_steps, num_samples]
     """
-    Plots the ratio of Surrogate Energy to Ground Truth Energy.
-    Ideally, this ratio should stay near 1.0.
-    
-    energy_s: [Time_Steps, Num_Samples]
-    energy_gt: [Time_Steps, Num_Samples]
-    """
-    # 1. Calculate the element-wise ratio
-    # Adding epsilon to avoid division by zero if wave leaves domain entirely
+    # Epsilon avoids division by zero if the wave has left the domain
     ratio = (energy_s + 1e-10) / (energy_gt + 1e-10)
     
-    # 2. Statistical aggregation across the 120 trajectories
     mean_ratio = np.mean(ratio, axis=1).squeeze()
     std_ratio = np.std(ratio, axis=1).squeeze()
     steps = np.arange(len(mean_ratio))
 
     plt.figure(figsize=(10, 6))
     
-    # Plot the consistency line (Central Mean)
-    plt.plot(steps, mean_ratio, color='purple', linewidth=2.5, label='Consistency Ratio ($E_{CNO} / E_{0}$)')
-    
-    # Plot the Shaded Variance Region (+/- 1 Std Dev)
+    plt.plot(steps, mean_ratio, color='purple', linewidth=2.5, label=r'$E_{CNO} / E_{GT}$')
     plt.fill_between(steps, 
                      mean_ratio - std_ratio, 
                      mean_ratio + std_ratio, 
-                     color='purple', alpha=0.15, label='$\pm 1\sigma$ Variation')
-
-    # Reference Line at 1.0 (Perfect Physical Replication)
-    plt.axhline(y=1.0, color='red', linestyle='--', linewidth=0.5, label='Physical Parity')
+                     color='purple', alpha=0.15, label=r'$\pm 1\sigma$')
+    plt.axhline(y=1.0, color='red', linestyle='--', linewidth=0.5, label='Ratio = 1')
     
-    # Report formatting: No title, minimal white space
     plt.xlabel("Rollout Step")
     plt.ylabel("Energy Ratio")
     plt.grid(True, alpha=0.3, linestyle=':')
     plt.legend(loc='lower left', frameon=True)
-    
-    # Set Y-axis to focus on the 1.0 region (e.g., 0.8 to 1.1) 
-    # to show the fine-grained dissipation
-    # plt.ylim(0.5, 1.2)
-    
     plt.tight_layout(pad=0.2)
     plt.savefig(save_path, bbox_inches='tight')
     plt.close()
-    print(f"[Visuals] Energy consistency ratio plot saved to {save_path}")
+    print(f"Saved {save_path}")
 
 def compute_phase_shift(u_pred, u_gt):
-    """
-    Calculates spatial lag (pixel distance) via 2D cross-correlation peak detection.
-    """
+    """Spatial lag in pixels between prediction and ground truth (peak of the 2D cross-correlation)."""
     pred = u_pred.squeeze().cpu().numpy()
     gt = u_gt.squeeze().cpu().numpy()
     
-    # Normalize to focus on wavefront shape matching
+    # Standardize so that only the wavefront shape matters
     pred = (pred - pred.mean()) / (pred.std() + 1e-8)
     gt = (gt - gt.mean()) / (gt.std() + 1e-8)
     
@@ -213,15 +155,12 @@ def compute_phase_shift(u_pred, u_gt):
     y_mid, x_mid = np.array(corr.shape) // 2
     y_peak, x_peak = np.unravel_index(np.argmax(corr), corr.shape)
     
-    # Euclidean distance of the lag from the center (zero-shift)
+    # Distance of the correlation peak from the zero-shift position
     shift = np.sqrt((y_peak - y_mid)**2 + (x_peak - x_mid)**2)
     return shift
 
 def plot_phase_drift(phase_matrix, save_path):
-    """
-    Plots average pixel shift over rollout with 1-std shaded region.
-    phase_matrix shape: [Time_Steps (T+1), Num_Samples]
-    """
+    """Mean phase drift (pixels) per rollout step with a 1-sigma band; phase_matrix: [T+1, num_samples]."""
     mean_shift = np.mean(phase_matrix, axis=1).squeeze()
     std_shift = np.std(phase_matrix, axis=1).squeeze()
     steps = np.arange(len(mean_shift))
@@ -229,36 +168,40 @@ def plot_phase_drift(phase_matrix, save_path):
     plt.figure(figsize=(10, 6))
     plt.plot(steps, mean_shift, color='forestgreen', marker='o', label='Mean Phase Shift (pixels)')
     plt.fill_between(steps, mean_shift - std_shift, mean_shift + std_shift, 
-                     color='forestgreen', alpha=0.2, label='$\pm 1\sigma$ deviation')
+                     color='forestgreen', alpha=0.2, label=r'$\pm 1\sigma$')
     
-    plt.title("Physical Fidelity: Temporal Phase Drift")
+    plt.title("Phase drift during the rollout")
     plt.xlabel("Rollout Step")
     plt.ylabel("Spatial Lag (Pixels)")
     plt.legend(); plt.grid(True, alpha=0.3)
     plt.savefig(save_path); plt.close()
-    print(f"[Visuals] Phase drift plot saved to {save_path}")
+    print(f"Saved {save_path}")
 
 def _test_pattern(model, testing_loader, batch_size=10, time_steps=15, dt=1, max_steps=15.0,
                   pattern=[1]*15, device='cuda', folder="", separate_var=False,
-                  separate_dim=[], is_masked=None, steady=False, is_airfoil=False):
-    
-    print(f"Testing Pattern: {pattern} | Full Comparative Physics (Scaled) Enabled")
+                  separate_dim=[], is_masked=None, steady=False, is_airfoil=False,
+                  physics_diagnostics=False):
+    """Autoregressive rollout following `pattern`; returns times and L1/L2/abs errors per step.
+
+    With physics_diagnostics=True it also tracks the energy of the CNO and ground-truth
+    wavefields and the phase drift, and saves the corresponding plots to `folder`.
+    """
+    print(f"Testing pattern {pattern} (physics diagnostics: {'on' if physics_diagnostics else 'off'})")
     delta = dt/max_steps
     eps = 1e-10
     T = []
     
-    # History storage for consistency analysis
+    # Per-batch histories for the optional physics diagnostics
     energy_history_s = []
     energy_history_gt = []
     phase_history = []
     
-    # Error metrics storage
     e_shape = (len(separate_dim), len(pattern), 0) if separate_var else (len(pattern), 0)
     E_l1, E_l2, E_abs = np.zeros(e_shape), np.zeros(e_shape), np.zeros(e_shape)
 
-    # Physical constants for Hamiltonian density calculation
+    # Constants for the energy diagnostic: grid spacing (m) and time per model step (s)
     DX_PHYS = 20.0
-    DT_NEURAL = 40 * 0.002 # 0.08s
+    DT_NEURAL = 40 * 0.002  # 40 solver steps of 2 ms
 
     with torch.no_grad():
         model.eval()
@@ -268,19 +211,19 @@ def _test_pattern(model, testing_loader, batch_size=10, time_steps=15, dt=1, max
             output_batch = output_batch_.to(device)
             t_batch = time_batch_.to(device)
             
-            # --- 1. INITIALIZATION ---
+            # Initial states (t = 0) of all trajectories in the batch
             inp = input_batch[0::time_steps] 
             stats = model.loader_dictionary
             
-            # Prepare physical fields for scaling
+            # Fields in physical units (for the energy diagnostic)
             c_phys = (inp[:, 1:2, :, :] * stats['std_c']) + stats['mean_c']
             u_prev_s_phys = (inp[:, 0:1, :, :] * stats['std_u']) + stats['mean_u']
             u_prev_gt_phys = u_prev_s_phys.clone()
             
-            # t=0 Baseline
-            e0 = compute_energy(u_prev_s_phys, u_prev_s_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
-            batch_energy_s, batch_energy_gt = [e0], [e0]
-            batch_phases = [torch.zeros(inp.shape[0])] 
+            if physics_diagnostics:
+                e0 = compute_energy(u_prev_s_phys, u_prev_s_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
+                batch_energy_s, batch_energy_gt = [e0], [e0]
+                batch_phases = [torch.zeros(inp.shape[0])] 
 
             curr_b_size = inp.shape[0]
             curr_e_shape = (len(separate_dim), len(pattern), curr_b_size) if separate_var else (len(pattern), curr_b_size)
@@ -291,30 +234,24 @@ def _test_pattern(model, testing_loader, batch_size=10, time_steps=15, dt=1, max
                 acc_jump += jump
                 if step == 0: T.append(acc_jump * delta)
                 
-                # --- 2. FORWARD PASS ---
+                # One model step of size `jump`
                 t_val = torch.zeros_like(t_batch[0::time_steps]) + jump * delta
                 pred_norm = model(inp, t_val)
                 out_norm = output_batch[acc_jump - 1::time_steps]
 
-                # --- 3. PHYSICAL TRANSLATION ---
                 u_s_phys = (pred_norm[:, 0:1] * stats['std_u']) + stats['mean_u']
                 u_gt_phys = (out_norm[:, 0:1] * stats['std_u']) + stats['mean_u']
 
-                # # --- 4. ENERGY TRACKING ---
-                # e_s = compute_energy(u_s_phys, u_prev_s_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
-                # e_gt = compute_energy(u_gt_phys, u_prev_gt_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL)
-                
-                # batch_energy_s.append(e_s)
-                # batch_energy_gt.append(e_gt)
+                if physics_diagnostics:
+                    batch_energy_s.append(compute_energy(u_s_phys, u_prev_s_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL))
+                    batch_energy_gt.append(compute_energy(u_gt_phys, u_prev_gt_phys, c_phys, dx=DX_PHYS, dt_neural=DT_NEURAL))
+                    shifts = [compute_phase_shift(pred_norm[:, 0:1][b], out_norm[:, 0:1][b]) for b in range(curr_b_size)]
+                    batch_phases.append(torch.tensor(shifts))
 
-                # Update physical previous states for next derivative
+                # Previous states for the next time derivative
                 u_prev_s_phys, u_prev_gt_phys = u_s_phys.clone(), u_gt_phys.clone()
 
-                # # Phase Shift Calculation
-                # shifts = [compute_phase_shift(pred_norm[:, 0:1][b], out_norm[:, 0:1][b]) for b in range(curr_b_size)]
-                # batch_phases.append(torch.tensor(shifts))
-
-                # --- 5. NUMERICAL ERROR CALCULATION ---
+                # Relative L1 / L2 errors (in %) and absolute error
                 if not separate_var:
                     E_curr_l1[i] = ((torch.mean(abs(pred_norm - out_norm), (-3, -2, -1)) / (torch.mean(abs(out_norm), (-3, -2, -1)) + eps)) * 100).cpu().numpy()
                     E_curr_l2[i] = ((torch.sqrt(torch.sum((pred_norm - out_norm)**2, (-3, -2, -1))) / (torch.sqrt(torch.sum(out_norm**2, (-3, -2, -1))) + eps)) * 100).cpu().numpy()
@@ -328,41 +265,35 @@ def _test_pattern(model, testing_loader, batch_size=10, time_steps=15, dt=1, max
                         E_curr_l2[j, i] = ((torch.sqrt(torch.sum((p_v - o_v)**2, (-3, -2, -1))) / (torch.sqrt(torch.sum(o_v**2, (-3, -2, -1))) + eps)) * 100).cpu().numpy()
                         E_curr_abs[j, i] = torch.mean(abs(p_v - o_v), (-3, -2, -1)).cpu().numpy()
 
-                # Autoregressive Feedback
+                # Feed the predicted wavefield back in (autoregressive rollout)
                 inp[:, 0:1] = pred_norm[:, 0:1]
 
-            # # Collect Batch Results
-            # energy_history_s.append(torch.stack(batch_energy_s).cpu().numpy())
-            # energy_history_gt.append(torch.stack(batch_energy_gt).cpu().numpy())
-            # phase_history.append(torch.stack(batch_phases).cpu().numpy())
+            if physics_diagnostics:
+                energy_history_s.append(torch.stack(batch_energy_s).cpu().numpy())
+                energy_history_gt.append(torch.stack(batch_energy_gt).cpu().numpy())
+                phase_history.append(torch.stack(batch_phases).cpu().numpy())
             
             E_l1 = np.concatenate((E_l1, E_curr_l1), axis=-1)
             E_l2 = np.concatenate((E_l2, E_curr_l2), axis=-1)
             E_abs = np.concatenate((E_abs, E_curr_abs), axis=-1)
 
-    # # --- 6. AGGREGATED REPORT GENERATION ---
-    # full_e_s = np.concatenate(energy_history_s, axis=1)
-    # full_e_gt = np.concatenate(energy_history_gt, axis=1)
-    
-    # # A: Comparative Energy Plot (Decay Profiles)
-    # plot_comparative_energy(full_e_s, full_e_gt, os.path.join(folder, "energy_decay_comparison.pdf"))
-    
-    # # B: Consistency Ratio Plot (The "Raonic Diagnostic")
-    # plot_energy_consistency_ratio(full_e_s, full_e_gt, os.path.join(folder, "energy_consistency_ratio.pdf"))
-    
-    # # C: Phase Drift Plot
-    # plot_phase_drift(np.concatenate(phase_history, axis=1), os.path.join(folder, "phase_drift.pdf"))
+    if physics_diagnostics:
+        full_e_s = np.concatenate(energy_history_s, axis=1)
+        full_e_gt = np.concatenate(energy_history_gt, axis=1)
+        plot_comparative_energy(full_e_s, full_e_gt, os.path.join(folder, "energy_decay_comparison.pdf"))
+        plot_energy_consistency_ratio(full_e_s, full_e_gt, os.path.join(folder, "energy_consistency_ratio.pdf"))
+        plot_phase_drift(np.concatenate(phase_history, axis=1), os.path.join(folder, "phase_drift.pdf"))
     
     return T, E_l1, E_l2, E_abs
 
 def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=True,
                      patterns=[[1]], folder_pattern="errors", steps=15, separate_var=False, 
-                     fine_tuned=False, training_folder=None, write_in_file=True):
+                     fine_tuned=False, training_folder=None, write_in_file=True, physics_diagnostics=False):
     
     base_folder = str(paths.FORWARD_CHECKPOINT_DIR)
     ckpt_file = paths.FORWARD_CKPT
     model_dirs = [(base_folder, ckpt_file)]
-    sufix = "in_dist_patterns.txt" if in_dist else "out_dist_patterns.txt"
+    suffix = "in_dist_patterns.txt" if in_dist else "out_dist_patterns.txt"
     
     for folder, _model_file in model_dirs:
         _folder = folder if not fine_tuned and training_folder is None else training_folder
@@ -374,20 +305,13 @@ def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=
         
         loader = WaveLoader(train_file, net_file, ckpt_path, which_name=which_example)
         
-        # --- Add the dataset normalization statistics to the configuration before loading the model ---
-        loader._ensure_config()  # Pre-load configuration from text files
-        data_path = str(paths.DATA_DIR)
-        stats = load_json_stats(data_path)
-        loader.loader_dict.update(stats) # Merges mean_c, std_c, etc. into the dictionary
-        
-        try: 
-            # Now the model will inherit the updated dictionary
-            model = loader.load_model()
-        except: 
-            continue
-        # ----------------------------------------------
+        # Add the dataset normalization statistics to the configuration before building the model
+        loader._ensure_config()
+        stats = load_json_stats(str(paths.DATA_DIR))
+        loader.loader_dict.update(stats)
+        model = loader.load_model()
 
-        # Override dict to access full 120-trajectory test set
+        # Evaluate on the full 120-trajectory test set
         loader.loader_dict["num_test"] = 120 
         loader.loader_dict["num_trajectories"] = 120
             
@@ -405,10 +329,11 @@ def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=
                                                 dt=loader.loader_dict["dt"], time_steps=loader.loader_dict["time_steps"], 
                                                 max_steps=loader.loader_dict["step_max"], pattern=pattern, folder=output_dir,
                                                 device=loader.device, batch_size=bs, separate_var=separate_var, 
-                                                separate_dim=loader.loader_dict.get("separate_dim", []))
+                                                separate_dim=loader.loader_dict.get("separate_dim", []),
+                                                physics_diagnostics=physics_diagnostics)
             
             p_str = "".join([str(p) + "_" for p in pattern])
-            error_file = os.path.join(output_dir, p_str + sufix)
+            error_file = os.path.join(output_dir, p_str + suffix)
             if write_in_file:
                 _write_in_file(error_file, loader.loader_dict, E_l1, E_l2, E_abs, T, pattern, 
                               separate_var=separate_var, num_var=len(loader.loader_dict.get("separate_dim", [])))
@@ -418,15 +343,13 @@ if __name__ == "__main__":
     base_checkpoints_dir = str(paths.FORWARD_CHECKPOINT_DIR)
     target_example = "wave_gauss"
     
-    # Pattern [1]*15 provides the most high-resolution temporal diagnostic
+    # 15 autoregressive steps of size 1, i.e. errors at every time step
     diagnostic_patterns = [[1] * 15]
 
-    print("\n" + "="*60)
-    print("      CLOSED-LOOP FORWARD MODEL: FULL PHYSICS DIAGNOSTIC      ")
-    print("="*60)
-    print(f"Targeting: 120 Test Trajectories")
-    print(f"Metrics: relative L1/L2 and absolute error per rollout step")
-    print("="*60 + "\n")
+    # Also track energy and phase drift (slower; phase drift is Fig. 2 of the report)
+    PHYSICS_DIAGNOSTICS = False
+
+    print("Forward CNO: autoregressive rollout on the 120 test trajectories")
 
     _evaluate_models(
         folders=base_checkpoints_dir,
@@ -437,11 +360,8 @@ if __name__ == "__main__":
         folder_pattern="full_physics_diagnostic",
         steps=15, 
         separate_var=True,
-        write_in_file=True
+        write_in_file=True,
+        physics_diagnostics=PHYSICS_DIAGNOSTICS
     )
-
-    print("\n" + "="*60)
-    print("DIAGNOSTIC COMPLETE")
-    print(f"Metrics folder: full_physics_diagnostic")
-    print("Energy and phase-drift diagnostics are available in _test_pattern (currently disabled).")
+    print("Done.")
     print("="*60)

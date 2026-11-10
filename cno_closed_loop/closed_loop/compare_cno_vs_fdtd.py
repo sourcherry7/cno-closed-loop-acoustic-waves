@@ -8,42 +8,32 @@ Run from the repository root:  python -m cno_closed_loop.closed_loop.compare_cno
 """
 
 import os
-import sys
 import torch
 import time
 import numpy as np
 import json
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from torch.profiler import profile, record_function, ProfilerActivity
 
-# --- 1. IMPORTS ---
 from cno_closed_loop import paths
 from cno_closed_loop.forward.model_loader import WaveLoader
 from cno_closed_loop.inverse.evaluate import make_test_dataset_from_ckpt
 from seismic_CPML_2D_pressure_second_order import seismicCPML2D  # vendored FDTD solver (external/seismic_cpml)
 
-# --- 2. UTILITY FUNCTIONS ---
 
 def load_json_stats(data_path):
-    """Unified normalization loader """
+    """Normalization statistics of the dataset."""
     json_path = os.path.join(data_path, "new_normalization_stats.json")
     with open(json_path, 'r') as f:
         return json.load(f)
 
-def normalize_u(u, stats):
-    return (u - stats['mean_u']) / stats['std_u']
-
-def denormalize_u(u_norm, stats):
-    return (u_norm * stats['std_u']) + stats['mean_u']
-
 def denormalize_c(c_norm, stats):
-    """Provides raw physical units without artificial range-clipping."""
+    """Normalized velocity field -> m/s (no clipping)."""
     return (c_norm * stats['std_c']) + stats['mean_c']
 
-# --- 3. CORE PROCESSING LOGIC ---
-
 def get_inverse_and_gt(model, dataset, traj_id, dt_gap, device):
-    """Step 1: Get CNO inverse prediction and Ground Truth"""
+    """Inverse-CNO estimate of c from (u(t=0), u(t=dt_gap)) of a test trajectory, plus its ground truth."""
     sample_idx = traj_id * 120 + dt_gap - 1 
     time_val, input_tensor, target_c_norm = dataset[sample_idx]
     
@@ -53,12 +43,12 @@ def get_inverse_and_gt(model, dataset, traj_id, dt_gap, device):
     with torch.no_grad():
         prediction_norm = model(input_batch, time_tensor)
     
-    # Store normalized versions for Neural Forward Pass
+    # Normalized prediction, used directly as forward-CNO input
     c_pred_norm_tensor = prediction_norm[:, 0:1] # [1, 1, H, W]
     c_pred_norm_np = c_pred_norm_tensor[0, 0].cpu().numpy()
     c_gt_norm_np = target_c_norm[0].cpu().numpy()
     
-    # Extract GT trajectory (already in physical units) 
+    # Ground-truth trajectory (physical units)
     i = sample_idx // dataset.multiplier
     h5_idx = i + dataset.start
     u_gt_traj = dataset.reader['u'][h5_idx]
@@ -78,21 +68,19 @@ class CNORollout(torch.nn.Module):
     def forward(self, u_norm, c_tensor, t_channel, t_scalar):
         preds = [u_norm]
         curr_u = u_norm
-        total_model_math_time = 0.0 # To aggregate the 15 durations
+        total_model_math_time = 0.0 # summed duration of the model calls
         
         for _ in range(1, self.steps + 1):
-            # Pre-processing (Excluded from pure timing)
             x_in = torch.cat([curr_u, c_tensor, t_channel], dim=1)
             
-            # --- timed region: model forward pass only ---
-            torch.cuda.synchronize() # Clear GPU queue
+            # Timed: the model call only
+            torch.cuda.synchronize() # wait for pending GPU work
             t_start = time.time()
             
             pred_out = self.model(x_in, t_scalar)
             
-            torch.cuda.synchronize() # Wait for math to finish
+            torch.cuda.synchronize() # wait for the model call to finish
             t_end = time.time()
-            # --------------------------------------------------------
             
             total_model_math_time += (t_end - t_start)
             
@@ -102,71 +90,8 @@ class CNORollout(torch.nn.Module):
         return torch.stack(preds), total_model_math_time
 
 
-
-def measure_forward_pass(rollout_module, c_batch_tensor, u0_phys, stats, device):
-    """
-    Times a full neural rollout, excluding pre- and post-processing.
-    """
-    # PRE-PROCESSING (Not Timed)
-    c_tensor = c_batch_tensor.to(device)
-    batch_size = c_tensor.shape[0]
-    dt_val = 1.0 / stats['n_steps']
-    t_scalar = torch.ones((batch_size, 1), device=device) * dt_val
-    t_channel = torch.ones_like(c_tensor) * dt_val
-    
-    mean_u = torch.tensor(stats['mean_u'], device=device)
-    std_u = torch.tensor(stats['std_u'], device=device)
-    u0_tensor = torch.from_numpy(u0_phys).float().to(device).unsqueeze(1)
-    u_norm = (u0_tensor - mean_u) / std_u
-
-    # Timed region
-    torch.cuda.synchronize() # Wait for GPU to be ready
-    start_time = time.time()
-    
-    with torch.no_grad():
-        # The actual forward pass of the neural surrogate
-        all_norm = rollout_module(u_norm, c_tensor, t_channel, t_scalar)
-        
-    torch.cuda.synchronize() # Wait for GPU to finish
-    end_time = time.time()
-    
-    inference_time = end_time - start_time
-
-    # POST-PROCESSING (Not Timed)
-    all_phys = (all_norm * std_u) + mean_u
-    res_np = all_phys.squeeze(2).transpose(0, 1).cpu().numpy()
-    
-    return res_np, inference_time
-
-def run_forward_cno_rollout_compiled(compiled_wrapper, c_pred_tensor, u0_phys, stats, device):
-    """
-    Executes a single batch rollout. Logic is isolated for timing.
-    """
-    c_tensor = c_pred_tensor.to(device)
-    batch_size = c_tensor.shape[0]
-    dt_val = 1.0 / stats['n_steps'] 
-    t_scalar = torch.ones((batch_size, 1), device=device) * dt_val
-    t_channel = torch.ones_like(c_tensor) * dt_val 
-    mean_u = torch.tensor(stats['mean_u'], device=device)
-    std_u = torch.tensor(stats['std_u'], device=device)
-    
-    u0_tensor = torch.from_numpy(u0_phys).float().to(device).unsqueeze(1)
-    u_norm = (u0_tensor - mean_u) / std_u
-
-    torch.cuda.synchronize()
-    t_start = time.time()
-    with torch.no_grad():
-        all_norm = compiled_wrapper(u_norm, c_tensor, t_channel, t_scalar)
-    torch.cuda.synchronize()
-    inf_time = time.time() - t_start
-
-    all_phys = (all_norm * std_u) + mean_u
-    res = all_phys.squeeze(2).transpose(0, 1).cpu().numpy()
-    return res, inf_time
-
-
 def run_numerical_resimulation(c_phys, u0_phys):
-    """Step 3: FDTD Numerical Physics Simulation"""
+    """FDTD resimulation on the 128x128 grid (dx = 40 m); returns the 16 stored snapshots."""
     NX, NY = 128, 128
     DELTAX, DELTAY = 40, 40 
     DELTAT = 0.002 
@@ -175,7 +100,7 @@ def run_numerical_resimulation(c_phys, u0_phys):
     NPOINTS_PML = 10
     f0 = 0.5
     dtype = np.float32
-    # Check for unphysical velocities that would crash FDTD (Stability check)
+    # Non-positive velocities would make the solver unstable
     if np.any(c_phys <= 0):
         print("WARNING: Negative/Zero velocities predicted. FDTD may become unstable.")
 
@@ -190,42 +115,31 @@ def run_numerical_resimulation(c_phys, u0_phys):
     return wavefields[::d_steps]
 
 def evaluate_trajectory_accuracies(u_gt_batch, u_num_batch, u_cno_batch, save_path):
-    """
-    Calculates and plots the mean and +/- 1 std of cumulative relative L2 errors.
-    Expected input shapes: [Batch, 16, 128, 128]
-    """
+    """Mean +/- 1 std of the cumulative relative L2 errors (inputs: [batch, 16, 128, 128]); prints and plots them."""
     eps = 1e-8
     
     def calc_cum_error_stats(pred, true):
-        # 1. Sum squared differences and true values over spatial dimensions (X, Y)
+        # Squared error and squared norm per snapshot
         diff_sq = np.sum((pred - true)**2, axis=(2, 3)) # Shape: [Batch, 16]
         true_sq = np.sum(true**2, axis=(2, 3))          # Shape: [Batch, 16]
         
-        # 2. Cumulative sum over the time dimension
+        # Accumulated over time
         cum_diff_sq = np.cumsum(diff_sq, axis=1)        # Shape: [Batch, 16]
         cum_true_sq = np.cumsum(true_sq, axis=1)        # Shape: [Batch, 16]
         
-        # 3. Calculate Relative L2 per trajectory [Batch, 16]
         rel_l2 = np.sqrt(cum_diff_sq) / (np.sqrt(cum_true_sq) + eps)
         
-        # 4. Calculate Mean and Std across the batch
         return np.mean(rel_l2, axis=0), np.std(rel_l2, axis=0)
 
-    # Calculate statistics for the 3 curves (returns mean, std)
     mean_cno_gt, std_cno_gt = calc_cum_error_stats(u_cno_batch, u_gt_batch)
     mean_num_gt, std_num_gt = calc_cum_error_stats(u_num_batch, u_gt_batch)
     mean_cno_num, std_cno_num = calc_cum_error_stats(u_cno_batch, u_num_batch)
 
-    # Print Report
-    print("\n" + "="*50)
-    print("               ACCURACY REPORT (Final Step Error)")
-    print("="*50)
-    print(f"1. FDTD vs Ground Truth : {mean_num_gt[-1]:.4f} ± {std_num_gt[-1]:.4f}  (Physical Baseline)")
-    print(f"2. CNO vs Ground Truth  : {mean_cno_gt[-1]:.4f} ± {std_cno_gt[-1]:.4f}  (End-to-End Surrogate)")
-    print(f"3. CNO vs FDTD          : {mean_cno_num[-1]:.4f} ± {std_cno_num[-1]:.4f}  (Surrogate Fidelity)")
-    print("="*50)
+    print("\nCumulative relative L2 error at the last step (mean ± std):")
+    print(f"  FDTD vs ground truth: {mean_num_gt[-1]:.4f} ± {std_num_gt[-1]:.4f}")
+    print(f"  CNO  vs ground truth: {mean_cno_gt[-1]:.4f} ± {std_cno_gt[-1]:.4f}")
+    print(f"  CNO  vs FDTD:         {mean_cno_num[-1]:.4f} ± {std_cno_num[-1]:.4f}")
 
-    # Plotting
     plt.figure(figsize=(10, 6))
     steps = np.arange(16)
     
@@ -251,18 +165,19 @@ def evaluate_trajectory_accuracies(u_gt_batch, u_num_batch, u_cno_batch, save_pa
     plt.close()
     
     print(f"Saved accuracy plot to: {save_path}")
-    
-# --- 4. MAIN EXECUTION ---
+
+
 if __name__ == "__main__":
-    # --- GPU settings ---
     torch.set_float32_matmul_precision('high') 
     torch.backends.cudnn.benchmark = True 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    total_samples = 120 
-    dt_gap = 9
+    total_samples = 120   # test trajectories
+    dt_gap = 9            # the inverse CNO sees the snapshot pair (t = 0, t = dt_gap)
+    num_iterations = 2    # timed forward rollouts, after one warm-up rollout
+    PROFILE = False       # print a torch.profiler table per rollout (adds overhead to the timing)
 
-    # 1. Load Everything
+    # Trained inverse and forward models
     inv_model, inv_dataset = make_test_dataset_from_ckpt(
         model_name=paths.INVERSE_RUN,
         checkpoint_name=paths.INVERSE_CKPT,
@@ -279,33 +194,13 @@ if __name__ == "__main__":
     )
     fwd_model = fwd_loader.load_model()
     stats = load_json_stats(inv_dataset.data_path)
-    # --- DIAGNOSTIC: DEVICE CHECK ---
-    print("\n[Diagnostic] Verifying Model Device Placement...")
-    all_on_gpu = True
-    for name, param in fwd_model.named_parameters():
-        if not param.is_cuda:
-            print(f"  WARNING: Parameter {name} is on CPU!")
-            all_on_gpu = False
 
-    # Check for hidden buffers (common in CNO for filters/FFT grids)
-    for name, buf in fwd_model.named_buffers():
-        if not buf.is_cuda:
-            print(f"  WARNING: Buffer {name} is on CPU!")
-            all_on_gpu = False
-
-    if all_on_gpu:
-        print("  Success: All parameters and buffers are on the GPU.")
-    # --------------------------------
-
-    # 2. Setup Compiled Surrogate
     print("\nCompiling the forward CNO with torch.compile...")
     fwd_model = torch.compile(fwd_model) 
-
-    print(f"Activation type used in model: {fwd_model.encoder[0].activation.__class__.__name__}")
     rollout_module = CNORollout(fwd_model, steps=15).to(device)
 
-    # 3. Data Gathering
-    print(f"Gathering {total_samples} trajectories...")
+    # Inverse CNO: estimated velocity field for every test trajectory
+    print(f"Estimating velocity fields for {total_samples} test trajectories...")
     c_pred_tensors, u0_phys_list, c_pred_phys_list, u_gt_traj_list = [], [], [], []
     for traj_id in range(total_samples):
         c_tensor, c_pred_norm, _, u_gt_traj = get_inverse_and_gt(inv_model, inv_dataset, traj_id, dt_gap, device)
@@ -318,10 +213,8 @@ if __name__ == "__main__":
     full_u0_batch = np.stack(u0_phys_list)
     u_gt_batch = np.stack(u_gt_traj_list)
 
-    # 4. BENCHMARKING PHASE
-    print(f"\nPHASE A: NEURAL FORWARD BENCHMARK (Batch Size {total_samples}, N=10 runs)")
-    
-    # Pre-compute inputs to isolate the "Pure Math"
+    # Forward CNO: batched autoregressive rollout from u(t = 0), timed on the GPU
+    print(f"\nForward CNO rollout: batch of {total_samples}, {num_iterations} timed runs after one warm-up")
     mean_u = torch.tensor(stats['mean_u'], device=device)
     std_u = torch.tensor(stats['std_u'], device=device)
     u0_tensor = torch.from_numpy(full_u0_batch).float().to(device).unsqueeze(1)
@@ -332,56 +225,43 @@ if __name__ == "__main__":
     t_channel = torch.ones_like(full_c_batch) * dt_val
 
     total_pure_math_time = 0.0
-    num_iterations = 2
     u_fwd_cno_batch = None
 
-    from torch.profiler import profile, record_function, ProfilerActivity
-    for i in tqdm(range(num_iterations + 1), desc="Timed Rollouts"):
-        # --- DIAGNOSTIC: LAYER-WISE PROFILER ---
+    for i in tqdm(range(num_iterations + 1), desc="Timed rollouts"):
+        if PROFILE:
+            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+                with record_function("CNO_Full_Rollout"):
+                    with torch.no_grad():
+                        preds_norm, iteration_math_time = rollout_module(u_norm, full_c_batch, t_channel, t_scalar)
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+        else:
+            with torch.no_grad():
+                preds_norm, iteration_math_time = rollout_module(u_norm, full_c_batch, t_channel, t_scalar)
 
-        print("\n[Diagnostic] Running Detailed GPU Profiler...")
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-            with record_function("CNO_Full_Rollout"):
-                with torch.no_grad():
-                    preds_norm, iteration_math_time = rollout_module(u_norm, full_c_batch, t_channel, t_scalar)
-        
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-        # Skip warmup iteration to exclude initialization overhead
+        # The first rollout is a warm-up (compilation, cuDNN autotuning)
         if i > 0:
             total_pure_math_time += iteration_math_time
         
-        # Convert wavefield for accuracy comparison on the final run
+        # Predictions of the last run, in physical units, for the accuracy comparison
         if i == num_iterations:
             all_phys = (preds_norm * std_u) + mean_u
             u_fwd_cno_batch = all_phys.squeeze(2).transpose(0, 1).cpu().numpy()
 
     avg_pure_math_time = total_pure_math_time / num_iterations
 
-    # 5. FDTD BASELINE
-    print("\nPHASE B: FDTD NUMERICAL BASELINE")
+    # FDTD baseline: the same estimated velocity fields, solved sequentially on the CPU
+    print("\nFDTD baseline")
     start_num = time.time()
-    # Sequential resimulation established in baseline reports
-    u_num_resim_list = [run_numerical_resimulation(c_pred_phys_list[i], u0_phys_list[i]) for i in tqdm(range(total_samples), desc="PDE Solver")]
+    u_num_resim_list = [run_numerical_resimulation(c_pred_phys_list[i], u0_phys_list[i]) for i in tqdm(range(total_samples), desc="FDTD")]
     u_num_batch = np.stack(u_num_resim_list)
     num_total_time = time.time() - start_num
 
-    # 6. FINAL PERFORMANCE REPORT
     time_per_sample_ms = (avg_pure_math_time / total_samples) * 1000 
-    
-    print("\n" + "="*60)
-    print("               FINAL PERFORMANCE REPORT")
-    print("="*60)
-    print(f"Total Trajectories Simulated  : {total_samples}")
-    print(f"Total FDTD Time (Sequential)  : {num_total_time:.4f}s")
-    print(f"Avg Pure Forward Math Time    : {avg_pure_math_time:.4f}s")
-    print("-" * 60)
-    print(f"Average CNO Time per Sample   : {time_per_sample_ms:.4f} ms")
-    print(f"FINAL SPEEDUP FACTOR          : {num_total_time / avg_pure_math_time:.2f}x")
-    print("="*60)
+    print(f"\nFDTD (sequential, CPU):     {num_total_time:.2f} s for {total_samples} trajectories")
+    print(f"Forward CNO (batched, GPU): {avg_pure_math_time:.2f} s ({time_per_sample_ms:.1f} ms per trajectory)")
+    print(f"Speed-up:                   {num_total_time / avg_pure_math_time:.1f}x")
 
-    # 7. ACCURACY EVALUATION
-    print("\nPHASE C: ACCURACY EVALUATION")
+    # Accuracy against the ground truth
     out_dir = paths.RESULTS_DIR / "closed_loop"
     os.makedirs(out_dir, exist_ok=True)
     evaluate_trajectory_accuracies(u_gt_batch, u_num_batch, u_fwd_cno_batch, str(out_dir / "accuracy_comparison.pdf"))
-    print(f"\n[Success] Accuracy comparison saved to: {out_dir / 'accuracy_comparison.pdf'}")

@@ -20,11 +20,9 @@ from cno_closed_loop.inverse.model import InverseCNO
 from cno_closed_loop.inverse.dataset import InverseWaveGaussians
 from cno_closed_loop.inverse.config import _load_inverse_dict
 
-# -----------------------------------------------------------------------------
-# Use the pure-PyTorch reference implementation of filtered_lrelu
-# -----------------------------------------------------------------------------
-# Avoids JIT-compiling the custom CUDA kernel of the CNO activation at inference.
 def patch_cno_cuda_ops():
+    """Use the pure-PyTorch reference implementation of the CNO's filtered_lrelu,
+    so that the custom CUDA kernel is not JIT-compiled at inference time."""
     for module_name, module in sys.modules.items():
         if 'ops.filtered_lrelu' in module_name and hasattr(module, 'filtered_lrelu'):
             original_fn = module.filtered_lrelu
@@ -35,20 +33,38 @@ def patch_cno_cuda_ops():
 
 patch_cno_cuda_ops()
 
-# -----------------------------------------------------------------------------
-# HELPERS
-# -----------------------------------------------------------------------------
 def safe_eval(val):
+    """Parse a value from a run property file (number, bool, list); keep plain strings."""
     if isinstance(val, str):
         val = val.strip()
         try: return ast.literal_eval(val)
-        except: return val
+        except (ValueError, SyntaxError): return val
     return val
 
-# -----------------------------------------------------------------------------
-# PLOTTING & METRICS
-# -----------------------------------------------------------------------------
+
+def _radial_power_spectrum(img):
+    """Radially averaged power spectral density of a 2D field (bins 0 .. H/2 - 1)."""
+    # 2D FFT and power spectrum
+    f = np.fft.fft2(img)
+    fshift = np.fft.fftshift(f)
+    psd2d = np.abs(fshift)**2
+
+    # Radial distance of each frequency from the centre
+    h, w = img.shape
+    yc, xc = h // 2, w // 2
+    y, x = np.indices(psd2d.shape)
+    r = np.sqrt((x - xc)**2 + (y - yc)**2)
+    r = r.astype(int)
+
+    # Average over rings of equal radius
+    tbin = np.bincount(r.ravel(), psd2d.ravel())
+    nr = np.bincount(r.ravel())
+    radialprofile = tbin / nr
+    return radialprofile[:h//2]
+
+
 def plot_test_sample(model, dataset, sample_idx, save_path):
+    """Inputs u(t1), u(t2), true and predicted velocity field for one test sample."""
     model.eval()
     device = next(model.parameters()).device
     
@@ -77,10 +93,6 @@ def plot_test_sample(model, dataset, sample_idx, save_path):
     ax[1].set_title(f"Input: u(t2) (dt={dt_actual:.1f})")
     fig.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
     
-    # im2 = ax[2].imshow(input_tensor[1].numpy() - input_tensor[0].numpy(), cmap='RdBu')
-    # ax[2].set_title("Motion (u2 - u1)")
-    # fig.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
-    
     im3 = ax[2].imshow(target_np, vmin=c_min, vmax=c_max, cmap='jet')
     ax[2].set_title("Ground truth velocity field")
     fig.colorbar(im3, ax=ax[2], fraction=0.046, pad=0.04)
@@ -94,6 +106,7 @@ def plot_test_sample(model, dataset, sample_idx, save_path):
     plt.close()
 
 def calculate_test_metrics(model, dataset, device):
+    """Relative L1 and L2 error of the predicted velocity field for every test sample, grouped by dt."""
     model.eval()
     metrics_by_dt = {}
     eps = 1e-8
@@ -127,6 +140,7 @@ def calculate_test_metrics(model, dataset, device):
     return metrics_by_dt
 
 def summarize_and_save(metrics_dict, output_dir):
+    """Print and save (CSV + bar chart) the mean errors per dt and overall."""
     if not metrics_dict:
         print("No valid metrics to summarize.")
         return
@@ -160,13 +174,14 @@ def summarize_and_save(metrics_dict, output_dir):
 
 
 def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
+    """Load a trained inverse CNO run and the inverse test dataset."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     folder = str(paths.INVERSE_CHECKPOINT_DIR / model_name)
     ckpt_path = f"{folder}/{checkpoint_name}"
     data_path = str(paths.DATA_DIR)
     
-    # 1. Load Architecture
+    # Run properties and architecture
     files = [f"{folder}/inv_training_properties.txt", f"{folder}/inv_net_architecture.txt"]
     train_prop = pd.read_csv(files[0], header=None, index_col=0).squeeze().to_dict()
     net_arch = pd.read_csv(files[1], header=None, index_col=0).squeeze().to_dict()
@@ -177,14 +192,14 @@ def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
     net_arch["batch_norm"] = net_arch.get("batch_norm") in [1, True, 'True']
     net_arch["is_att"] = net_arch.get("is_att", False) in [1, True, 'True']
 
-    # 2. Setup Loader Dictionary
+    # Experiment configuration
     loader_dict = _load_inverse_dict(files=files, steps=15, which_example='wave_gauss', is_masked=False)
     loader_dict['data_path'] = data_path
     
     _allowed = list(range(0 if loader_dict.get("include_zero") else 1, int(train_prop.get("time_steps", 15)) + 1))
     loader_dict['allowed_transitions'] = _allowed
 
-    # 3. Model initialization
+    # Model
     print(f"Initializing model on {device}...")
     model = InverseCNO.load_from_checkpoint(
         ckpt_path,
@@ -208,7 +223,7 @@ def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
         allowed_transitions=loader_dict['allowed_transitions']
     ).to(device)
 
-    # 4. Dataset Loading
+    # Test dataset
     test_dataset = InverseWaveGaussians(
         which="test", resolution=128, num_trajectories=num_traj, 
         data_path=data_path, max_num_time_steps=15, 
@@ -217,12 +232,8 @@ def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
 
     return model, test_dataset
 
-# -----------------------------------------------------------------------------
-# DIAGNOSTIC ADDITIONS
-# -----------------------------------------------------------------------------
-
 def plot_absolute_error_diagnostic(model, dataset, sample_idx, save_path):
-    """Plots Ground Truth, Prediction, and Absolute Error Heatmap on a unified scale."""
+    """True and predicted velocity field (shared colour scale) and their absolute error."""
     model.eval()
     device = next(model.parameters()).device
     
@@ -237,24 +248,22 @@ def plot_absolute_error_diagnostic(model, dataset, sample_idx, save_path):
     pred_np = prediction[0, 0].cpu().numpy()
     abs_error = np.abs(target_np - pred_np)
     
-    # Calculate global min/max for a unified color scale
     cmin = min(target_np.min(), pred_np.min())
     cmax = max(target_np.max(), pred_np.max())
     
     fig, ax = plt.subplots(1, 3, figsize=(18, 5))
     
-    # Use vmin/vmax to lock the scale for Truth and Prediction
     im0 = ax[0].imshow(target_np, cmap='jet', vmin=cmin, vmax=cmax)
     ax[0].set_title("Ground Truth $c$")
     fig.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
     
     im1 = ax[1].imshow(pred_np, cmap='jet', vmin=cmin, vmax=cmax)
-    ax[1].set_title("Predicted $\hat{c}$")
+    ax[1].set_title(r"Predicted $\hat{c}$")
     fig.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
     
-    # Absolute Error keeps its own scale to highlight local discrepancies
+    # The error map has its own colour scale
     im2 = ax[2].imshow(abs_error, cmap='inferno')
-    ax[2].set_title("Absolute Error $|c - \hat{c}|$")
+    ax[2].set_title(r"Absolute Error $|c - \hat{c}|$")
     fig.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
     
     plt.tight_layout()
@@ -263,7 +272,7 @@ def plot_absolute_error_diagnostic(model, dataset, sample_idx, save_path):
     print(f"Diagnostic error plot saved to: {save_path}")
 
 def plot_spectral_analysis(model, dataset, device, output_dir, num_samples=120):
-    """Performs Radial Averaged Power Spectrum analysis on test samples."""
+    """Radially averaged power spectrum of true vs. predicted velocity fields (one sample per test trajectory)."""
     model.eval()
     all_raps_true = []
     all_raps_pred = []
@@ -271,9 +280,9 @@ def plot_spectral_analysis(model, dataset, device, output_dir, num_samples=120):
     print(f"Running spectral analysis on {num_samples} samples...")
     
     with torch.no_grad():
-        # We take one sample per unique velocity field (dt=9 is usually optimal)
+        # One sample per test trajectory: the snapshot pair (t = 0, t = 9)
         for i in tqdm(range(num_samples)):
-            idx = i * 120 + 8 # Targeting dt=9
+            idx = i * 120 + 8
             time_val, input_tensor, target_c = dataset[idx]
             
             time_tensor = torch.tensor([time_val], dtype=torch.float32).to(device)
@@ -282,30 +291,10 @@ def plot_spectral_analysis(model, dataset, device, output_dir, num_samples=120):
             
             true_img = target_c[0].cpu().numpy()
             pred_img = prediction[0, 0].cpu().numpy()
-            
-            def get_raps(img):
-                # 2D FFT and Power Spectrum
-                f = np.fft.fft2(img)
-                fshift = np.fft.fftshift(f)
-                psd2d = np.abs(fshift)**2
-                
-                # Create radial grid
-                h, w = img.shape
-                yc, xc = h // 2, w // 2
-                y, x = np.indices(psd2d.shape)
-                r = np.sqrt((x - xc)**2 + (y - yc)**2)
-                r = r.astype(int)
-                
-                # Average bins
-                tbin = np.bincount(r.ravel(), psd2d.ravel())
-                nr = np.bincount(r.ravel())
-                radialprofile = tbin / nr
-                return radialprofile[:h//2]
 
-            all_raps_true.append(get_raps(true_img))
-            all_raps_pred.append(get_raps(pred_img))
+            all_raps_true.append(_radial_power_spectrum(true_img))
+            all_raps_pred.append(_radial_power_spectrum(pred_img))
 
-    # Convert to arrays and calculate statistics
     raps_true = np.array(all_raps_true)
     raps_pred = np.array(all_raps_pred)
     
@@ -324,7 +313,7 @@ def plot_spectral_analysis(model, dataset, device, output_dir, num_samples=120):
     plt.yscale('log')
     plt.xlabel("Spatial Frequency (radial bin)")
     plt.ylabel("Power Spectral Density (Log Scale)")
-    plt.title("Radial Averaged Power Spectrum: $c$ vs $\hat{c}$")
+    plt.title(r"Radial Averaged Power Spectrum: $c$ vs $\hat{c}$")
     plt.legend()
     plt.grid(True, which="both", ls="-", alpha=0.2)
     
@@ -334,10 +323,8 @@ def plot_spectral_analysis(model, dataset, device, output_dir, num_samples=120):
     plt.close()
     print(f"Spectral analysis plot saved to: {save_path}")
 
-# -----------------------------------------------------------------------------
-# UPDATED MAIN
-# -----------------------------------------------------------------------------
 def main(model_name, checkpoint_name, num_traj):
+    """Run all inverse-problem diagnostics for one trained run."""
     model, test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name=checkpoint_name, num_traj=num_traj)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
@@ -345,7 +332,7 @@ def main(model_name, checkpoint_name, num_traj):
     output_dir = str(paths.RESULTS_DIR / "inverse" / model_name)
     os.makedirs(output_dir, exist_ok=True)
     
-    print("\n--- Running Diagnostics ---")
+    print("\nInverse CNO diagnostics")
     
     # Spectral analysis (radially averaged power spectrum) across all test trajectories
     plot_spectral_analysis(model, test_dataset, device, output_dir, num_samples=num_traj)
@@ -360,5 +347,7 @@ def main(model_name, checkpoint_name, num_traj):
     # Relative L1/L2 errors per time gap dt (CSV + bar chart)
     metrics = calculate_test_metrics(model, test_dataset, device)
     summarize_and_save(metrics, output_dir)
+
+
 if __name__ == "__main__":
     main(model_name=paths.INVERSE_RUN, checkpoint_name=paths.INVERSE_CKPT, num_traj=120)
