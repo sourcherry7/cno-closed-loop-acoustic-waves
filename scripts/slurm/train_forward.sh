@@ -1,39 +1,36 @@
 #!/bin/bash
 #SBATCH --job-name=cno_train
-#SBATCH --output=fwd_results/logs/%j.out     # STDOUT log file
-#SBATCH --error=fwd_results/logs/%j.err      # STDERR log file
-#SBATCH --time=24:00:00                  # 24h
+#SBATCH --output=results/logs/%j_cno_train.out    # STDOUT log file
+#SBATCH --error=results/logs/%j_cno_train.err     # STDERR log file
+#SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8                # 8 CPU cores
-#SBATCH --mem-per-cpu=8G                 # 8GB RAM
+#SBATCH --mem-per-cpu=8G                 # 8GB RAM per core
 #SBATCH --gpus=rtx_4090:1                # Request 1x RTX 4090
+#
+# Train the forward CNO (configuration in cno_closed_loop/forward/train.py).
+# Submit from the repository root:
+#   mkdir -p results/logs && VENV=/path/to/venv sbatch scripts/slurm/train_forward.sh
 
 # --- 1. SETUP ENVIRONMENT ---
-# Load the module stack
+# Cluster-specific module stack (ETH Euler); adapt or remove for other systems.
 module load stack/2024-06 gcc/12.2.0 python_cuda eth_proxy
 
-# Activate your venv (Path confirmed from your logs)
-source /cluster/home/svisnjic/venvs/operatorlearning/bin/activate
+# Python environment with the packages from requirements.txt
+source "${VENV:?set VENV to the path of a Python virtual environment}/bin/activate"
 
 # --- 2. DEFINE PATHS ---
-PROJECT_ROOT="/cluster/home/svisnjic/Thalassa"
-CODE_DIR="$PROJECT_ROOT/src/external/CNO/CNO2d_time_dependent_&_foundation_model"
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
+cd "$PROJECT_ROOT"
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Export PYTHONPATH (Crucial so it finds CNO_timeModule_CIN)
-export PYTHONPATH="$CODE_DIR:$PYTHONPATH"
-
-# Move to the code directory
-cd "$CODE_DIR"
-
-# --- 3. RUN TRAINING ---
+# --- 3. RUN ---
 echo "=================================================="
-echo "Starting Training"
-echo "Experiment: Configured manually wave_gauss inside TrainCNO_time_L.py"
+echo "Train the forward CNO (configuration in cno_closed_loop/forward/train.py)."
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "=================================================="
 
-# Run without arguments
-python TrainCNO_time_L.py
+python -m cno_closed_loop.forward.train
 
 echo "=================================================="
 echo "Job Finished."
