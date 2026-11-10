@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cno-closed-loop"
+version = "1.0.0"
+description = "Closed-loop modelling of acoustic wave propagation with Convolutional Neural Operators"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Stefan Višnjić" }]
+
+[tool.setuptools]
+packages = ["cno_closed_loop", "cno_closed_loop.forward", "cno_closed_loop.inverse", "cno_closed_loop.closed_loop"]

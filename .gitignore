@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Data, trained models and generated outputs (not versioned)
+data/*
+!data/README.md
+checkpoints/
+results/
+lightning_logs/
+*.ckpt
+*.h5
+*.nc
