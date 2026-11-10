@@ -1,0 +1,4 @@
+[submodule "external/CNO"]
+	path = external/CNO
+	url = https://github.com/sourcherry7/ConvolutionalNeuralOperator.git
+	branch = closed-loop-waves
