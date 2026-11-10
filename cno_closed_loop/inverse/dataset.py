@@ -1,3 +1,10 @@
+# Dataset for the inverse problem: (u(t1), u(t2), dt) -> velocity field c.
+#
+# Adapted from WaveGaussians in DataLoaders/CNO_TimeLoaders.py of
+# camlab-ethz/ConvolutionalNeuralOperator (MIT License), commit 75a3b9b.
+# Changes: reads the HDF5 Wave-Gauss data and returns two normalized wavefield
+# snapshots plus the time gap as input, and the normalized velocity field as label.
+
 import os
 import sys
 import h5py
@@ -6,9 +13,7 @@ import torch
 import numpy as np
 
 
-PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
-EXTERNAL_CNO_DIR = f"{PROJECT_ROOT}/src/external/CNO/CNO2d_time_dependent_&_foundation_model"
-sys.path.append(EXTERNAL_CNO_DIR)
+from cno_closed_loop import paths
 
 from DataLoaders.CNO_TimeLoaders import BaseTimeDataset
 
@@ -105,7 +110,7 @@ if __name__ == "__main__":
         which="train", 
         resolution=128, 
         num_trajectories=10, 
-        data_path="/cluster/home/svisnjic/Thalassa/data",
+        data_path=str(paths.DATA_DIR),
         time_input=True,
         max_num_time_steps=15,
         time_step_size=1,
@@ -132,4 +137,4 @@ if __name__ == "__main__":
     print(f"Batch Input Shape: {batch_in.shape}") # Expected: [4, 3, 128, 128]
     print(f"Batch Label Shape: {batch_label.shape}") # Expected: [4, 1, 128, 128]
     
-    print("\nSanity Check Passed! You are ready for the CNO.")
+    print("\nSanity check passed.")

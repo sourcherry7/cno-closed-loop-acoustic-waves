@@ -1,5 +1,14 @@
+# Training script for the inverse CNO: (u(t1), u(t2), dt) -> velocity field c.
+#
+# Adapted from TrainCNO_time_L.py of camlab-ethz/ConvolutionalNeuralOperator
+# (MIT License), commit 75a3b9b. Changes: inverse-problem model, data and
+# configuration (InverseCNO, inverse dataset/config), hyperparameters, a per-epoch
+# visual-check callback, and run property files moved into the run folder.
+# Run from the repository root:  python -m cno_closed_loop.inverse.train
+
 from pytorch_lightning import Trainer
-from inv_CNO_timeModule_CIN import CNO_time
+from cno_closed_loop import paths
+from cno_closed_loop.inverse.model import InverseCNO
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
@@ -15,7 +24,7 @@ import torch
 
 
 from pytorch_lightning.callbacks import Callback
-from inv_checker import save_reconstruction_sample # Import your new function
+from cno_closed_loop.inverse.visual_check import save_reconstruction_sample
 
 
 class VisualVerificationCallback(Callback):
@@ -44,51 +53,13 @@ class VisualVerificationCallback(Callback):
 
 if len(sys.argv) <= 2:
     
-    # training_properties = {
-    #     "learning_rate": 0.001, 
-    #     "weight_decay": 1e-6,
-    #     "scheduler_step": 10,
-    #     "scheduler_gamma": 0.9,
-    #     "epochs": 100,
-    #     "batch_size": 16,         
-    #     "time_steps": 15,         # How many time steps to select?
-    #     "dt": 1,                  # What is the time step? (1 means include entire traj, 2 means taking every other step, etc.
-    #     "training_samples": 256, # How many training samples?
-    #     "time_input": 1,          # Should we include time in the input channels?
-    #     "allowed": 'all',         # All2ALL (train) - all , or One2All (train) - one2all, AR training - one
-    #     "cluster": True,          # Something internal (don't bother)
-    # }
-    
-    # model_architecture_ = {
-    #     "N_layers": 4,            # Number of (D) & (U) blocks 
-    #     "channel_multiplier": 32, # Parameter d_e (how the number of channels changes)
-    #     "N_res": 8,               # Number of (R) blocks in the middle networs.
-    #     "N_res_neck" : 8,         # Number of (R) blocks in the BN
-        
-    #     "batch_norm": 1,          # Should we use simple BN -- 1: use it? If is_time == 1, we turn it off
-    #     "is_time": 1,             # Should we conditional BN/LN/IN?
-    #     "nl_dim": "23",           # If yes, which norm? '23'-IN, '023'-BN, '123'-LN
-        
-    #     "in_size": 128,           # Resolution of the computational grid
-    #     "activation": 'cno_lrelu_torch',# cno_lrelu, cno_lrelu_torch or lrelu
-        
-    #     "is_att": False,          # Should we use attention in the bottleneck? You could add it!
-    #     "patch_size" : 1,         # ViT parameters, if is_att == True
-    #     "dim_multiplier" : 1,
-    #     "depth" : 2,
-    #     "heads" : 2,
-    #     "dim_head_multiplier" : 0.5,
-    #     "mlp_dim_multiplier" : 1.0,
-    #     "emb_dropout" : 0.
-    #     }
-
     training_properties = {
         "learning_rate": 0.0002,      # Slightly lower for stability with larger model capacity
         "weight_decay": 1e-4,
         "scheduler_step": 3,          # Adjusted for longer epoch count
         "scheduler_gamma": 0.9,
         "epochs": 30,                 # Inverse problems require more time to resolve structural maps
-        "batch_size": 32,              # 16 Optimal for RTX 4090 memory/gradient stability
+        "batch_size": 32,
         "time_steps": 15,              # Use the full simulation depth
         "dt": 1,                       
         "training_samples": 2048,      # Critical: Increased to capture diverse c-field patterns -> 2048
@@ -114,7 +85,7 @@ if len(sys.argv) <= 2:
         "patch_size" : 1, 
         "dim_multiplier" : 1,
         "depth" : 2,
-        "heads" : 4,                   # Increased heads if you decide to toggle is_att to True
+        "heads" : 4,                   # only used if is_att is True
         "dim_head_multiplier" : 0.5,
         "mlp_dim_multiplier" : 1.0,
         "emb_dropout" : 0.2,           # Small dropout to prevent overfitting on specific wave shapes
@@ -133,7 +104,7 @@ if len(sys.argv) <= 2:
     # WHAT IS THE EXPERIMENT?
     which_example = "wave_gauss"
     
-    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints" # "--- PROVIDE THE FOLDER TO SAVE THE MODEL ----" 
+    folder = str(paths.INVERSE_CHECKPOINT_DIR)
     
 else:
     raise ValueError("To many args")
@@ -170,19 +141,13 @@ df.to_csv(folder + '/inv_net_architecture.txt', header=False, index=True, mode='
 #---------------------------------------------------------
 # Load parameters related to the specific experiment -- "DataLoaders/all_experiments.json"
 
-# Dict_EXP = json.load( open( "DataLoaders/all_experiments.json" ))
-# if which_example in Dict_EXP:
-#     loader_dict =  Dict_EXP[which_example]
-# else:
-#     raise ValueError("Please specify different benchmark")
-
-# NEW: use inverse dict
-from inv_utils import _load_inverse_dict
+# Inverse-problem experiment configuration (replaces DataLoaders/all_experiments.json)
+from cno_closed_loop.inverse.config import _load_inverse_dict
 
 if which_example == 'wave_gauss':
     files = [folder + '/inv_training_properties.txt', folder + '/inv_net_architecture.txt']
 else:
-    file = None
+    raise ValueError("Only the wave_gauss experiment is implemented for the inverse problem")
 loader_dict = _load_inverse_dict(files=files, which_example=which_example)
 
 
@@ -213,7 +178,7 @@ loader_dict["allowed_tran"] = _allowed
 
 #---------------------------------------------------------
 # Initialize CNO
-model   = CNO_time(in_dim =  loader_dict["in_dim"],               
+model   = InverseCNO(in_dim =  loader_dict["in_dim"],               
                     in_size  = 128,                  
                     N_layers = model_architecture_["N_layers"],                
                     N_res =  model_architecture_["N_res"], 
@@ -250,8 +215,6 @@ model   = CNO_time(in_dim =  loader_dict["in_dim"],
 ver = "_0203_new_data" # Just a random string to be added to the model name
 
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
-# early_part = 10
-# early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=training_properties["epochs"]//early_part)
 early_stop_callback = EarlyStopping(monitor="mean_val_l", patience=10)
 
 # Initialize the callback

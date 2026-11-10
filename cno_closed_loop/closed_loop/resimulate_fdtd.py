@@ -1,3 +1,11 @@
+"""Closed loop with the classical solver: inverse CNO -> velocity field -> FDTD.
+
+For each of the 120 test trajectories, the inverse CNO estimates c from
+(u(t=0), u(t=dt)); the FDTD solver then resimulates the trajectory from u(t=0)
+and the cumulative relative L2 error against the ground truth is reported.
+Run from the repository root:  python -m cno_closed_loop.closed_loop.resimulate_fdtd
+"""
+
 import os
 import sys
 import torch
@@ -6,17 +14,10 @@ import numpy as np
 import json
 import matplotlib.pyplot as plt
 
-# Paths & Imports
-PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
-MYMODELS_DIR = f"{PROJECT_ROOT}/src/my_models"
-sys.path.append(MYMODELS_DIR)
-
-# Assuming these are available from your previous modularization
-from inverse_problem.inv_testing import make_test_dataset_from_ckpt
-
-
-sys.path.append(f"{PROJECT_ROOT}/src/external/wave_simulation")
-from seismic_CPML_2D_pressure_second_order2 import seismicCPML2D
+# Imports
+from cno_closed_loop import paths
+from cno_closed_loop.inverse.evaluate import make_test_dataset_from_ckpt
+from seismic_CPML_2D_pressure_second_order import seismicCPML2D  # vendored FDTD solver (external/seismic_cpml)
 
 
 
@@ -80,7 +81,7 @@ def run_physics_validation(c_phys, u0_phys):
     # 2. Setup Solver Inputs
     density = np.ones((NX, NY), dtype=dtype)
     # The solver expects (past_pressure, present_pressure).
-    # Just like your generation script, we pass u0 for both to start from rest.
+    # As in the data generation, u0 is passed for both time levels (the wavefield starts at rest).
     initial_pressures = (u0_phys.astype(dtype), u0_phys.astype(dtype))
 
     # 3. Run the Physics Simulation
@@ -199,7 +200,7 @@ if __name__ == "__main__":
     start_time = time.time()
 
     test_num_traj = 120
-    model, dataset = make_test_dataset_from_ckpt(model_name="model_0103_new_data", checkpoint_name="epoch=3-step=30720.ckpt", num_traj=test_num_traj)
+    model, dataset = make_test_dataset_from_ckpt(model_name=paths.INVERSE_RUN, checkpoint_name=paths.INVERSE_CKPT, num_traj=test_num_traj)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
@@ -232,7 +233,7 @@ if __name__ == "__main__":
             stats = json.load(f)
         c_gt_phys = (c_gt_norm * stats['std_c']) + stats['mean_c']
         
-        out_dir = f"{PROJECT_ROOT}/inv_results/testing_visuals/closed_loop"
+        out_dir = str(paths.RESULTS_DIR / "closed_loop")
         os.makedirs(out_dir, exist_ok=True)
         
         # 3. Calculate Step-by-Step Cumulative Error (Fast NumPy Vectorization)
@@ -255,6 +256,7 @@ if __name__ == "__main__":
         print(f"Traj {traj+1:03d}/{num_test_trajectories} | Final L2 Error: {traj_cum_errors[-1]:.4f}")
 
 
+        # Optional per-trajectory figures (as in the report appendix):
         # comparison_save_file = f"{out_dir}/resimulation_vs_gt_traj{traj}_dt{dt}.pdf"
         
         # plot_trajectories_side_by_side(
@@ -285,7 +287,7 @@ if __name__ == "__main__":
     print("========================================")
 
     # --- 5. PLOT THE AVERAGE CURVE ---
-    out_dir = f"{PROJECT_ROOT}/inv_results/testing_visuals/closed_loop"
+    out_dir = str(paths.RESULTS_DIR / "closed_loop")
     os.makedirs(out_dir, exist_ok=True)
     
     plt.figure(figsize=(8, 5))

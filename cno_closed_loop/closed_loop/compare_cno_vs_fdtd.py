@@ -1,3 +1,12 @@
+"""Closed loop: inverse CNO -> velocity field -> forward resimulation, CNO vs. FDTD.
+
+For each of the 120 test trajectories, the inverse CNO estimates c from the pair
+(u(t=0), u(t=dt_gap)). The full trajectory is then resimulated from u(t=0) with
+(a) the forward CNO (autoregressive rollout, timed on the GPU) and (b) the FDTD
+solver, and both are compared with the ground truth (cumulative relative L2).
+Run from the repository root:  python -m cno_closed_loop.closed_loop.compare_cno_vs_fdtd
+"""
+
 import os
 import sys
 import torch
@@ -7,18 +16,11 @@ import json
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-# --- 1. SETUP PATHS ---
-PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
-MYMODELS_DIR = f"{PROJECT_ROOT}/src/my_models"
-EXTERNAL_CNO_DIR = f"{PROJECT_ROOT}/src/external/CNO/CNO2d_time_dependent_&_foundation_model"
-sys.path.append(MYMODELS_DIR)
-sys.path.append(EXTERNAL_CNO_DIR)
-
-# Custom Imports
-from wave_loaders import WaveLoader
-from inverse_problem.inv_testing import make_test_dataset_from_ckpt
-sys.path.append(f"{PROJECT_ROOT}/src/external/wave_simulation")
-from seismic_CPML_2D_pressure_second_order2 import seismicCPML2D
+# --- 1. IMPORTS ---
+from cno_closed_loop import paths
+from cno_closed_loop.forward.model_loader import WaveLoader
+from cno_closed_loop.inverse.evaluate import make_test_dataset_from_ckpt
+from seismic_CPML_2D_pressure_second_order import seismicCPML2D  # vendored FDTD solver (external/seismic_cpml)
 
 # --- 2. UTILITY FUNCTIONS ---
 
@@ -65,8 +67,8 @@ def get_inverse_and_gt(model, dataset, traj_id, dt_gap, device):
 
 class CNORollout(torch.nn.Module):
     """
-    Implements internal model timing as requested by the supervisor.
-    Isolates only the model execution from all other logic.
+    Autoregressive rollout of the forward CNO that times only the model calls
+    (the GPU is synchronized before and after each call).
     """
     def __init__(self, model, steps=15):
         super().__init__()
@@ -82,7 +84,7 @@ class CNORollout(torch.nn.Module):
             # Pre-processing (Excluded from pure timing)
             x_in = torch.cat([curr_u, c_tensor, t_channel], dim=1)
             
-            # --- THE SUPERVISOR SANDWICH ---
+            # --- timed region: model forward pass only ---
             torch.cuda.synchronize() # Clear GPU queue
             t_start = time.time()
             
@@ -103,8 +105,7 @@ class CNORollout(torch.nn.Module):
 
 def measure_forward_pass(rollout_module, c_batch_tensor, u0_phys, stats, device):
     """
-    Implements the supervisor's 'sandwich' timing method.
-    Isolates the neural execution from all pre/post-processing.
+    Times a full neural rollout, excluding pre- and post-processing.
     """
     # PRE-PROCESSING (Not Timed)
     c_tensor = c_batch_tensor.to(device)
@@ -118,7 +119,7 @@ def measure_forward_pass(rollout_module, c_batch_tensor, u0_phys, stats, device)
     u0_tensor = torch.from_numpy(u0_phys).float().to(device).unsqueeze(1)
     u_norm = (u0_tensor - mean_u) / std_u
 
-    # THE SANDWICH (Timed)
+    # Timed region
     torch.cuda.synchronize() # Wait for GPU to be ready
     start_time = time.time()
     
@@ -253,8 +254,7 @@ def evaluate_trajectory_accuracies(u_gt_batch, u_num_batch, u_cno_batch, save_pa
     
 # --- 4. MAIN EXECUTION ---
 if __name__ == "__main__":
-    # --- HARDWARE OPTIMIZATION ---
-    # Essential for RTX 4090 throughput on Euler
+    # --- GPU settings ---
     torch.set_float32_matmul_precision('high') 
     torch.backends.cudnn.benchmark = True 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -264,17 +264,17 @@ if __name__ == "__main__":
 
     # 1. Load Everything
     inv_model, inv_dataset = make_test_dataset_from_ckpt(
-        model_name="model_0103_new_data", 
-        checkpoint_name="epoch=3-step=30720.ckpt", 
+        model_name=paths.INVERSE_RUN,
+        checkpoint_name=paths.INVERSE_CKPT,
         num_traj=total_samples
     )
     inv_model.to(device).eval()
 
-    fwd_base = os.path.join(PROJECT_ROOT, "fwd_results/checkpoints/model_0903_newgauss")
+    fwd_base = str(paths.FORWARD_CHECKPOINT_DIR / paths.FORWARD_RUN)
     fwd_loader = WaveLoader(
         train_file=os.path.join(fwd_base, "training_properties.txt"),
         net_file=os.path.join(fwd_base, "net_architecture.txt"),
-        ckpt_path=os.path.join(fwd_base, "epoch=20-step=182784.ckpt"),
+        ckpt_path=os.path.join(fwd_base, paths.FORWARD_CKPT),
         which_name="wave_gauss"
     )
     fwd_model = fwd_loader.load_model()
@@ -298,7 +298,7 @@ if __name__ == "__main__":
     # --------------------------------
 
     # 2. Setup Compiled Surrogate
-    print("\n[Hardware] Compiling Neural Surrogate for RTX 4090...")
+    print("\nCompiling the forward CNO with torch.compile...")
     fwd_model = torch.compile(fwd_model) 
 
     print(f"Activation type used in model: {fwd_model.encoder[0].activation.__class__.__name__}")
@@ -308,7 +308,6 @@ if __name__ == "__main__":
     print(f"Gathering {total_samples} trajectories...")
     c_pred_tensors, u0_phys_list, c_pred_phys_list, u_gt_traj_list = [], [], [], []
     for traj_id in range(total_samples):
-        from fwd_from_inv_prediction import get_inverse_and_gt
         c_tensor, c_pred_norm, _, u_gt_traj = get_inverse_and_gt(inv_model, inv_dataset, traj_id, dt_gap, device)
         c_pred_tensors.append(c_tensor.squeeze(0)) 
         u0_phys_list.append(u_gt_traj[0])
@@ -380,8 +379,9 @@ if __name__ == "__main__":
     print(f"FINAL SPEEDUP FACTOR          : {num_total_time / avg_pure_math_time:.2f}x")
     print("="*60)
 
-    # 7. ACCURACY EVALUATION [cite: 70, 102]
-    from fwd_from_inv_prediction import evaluate_trajectory_accuracies
+    # 7. ACCURACY EVALUATION
     print("\nPHASE C: ACCURACY EVALUATION")
-    evaluate_trajectory_accuracies(u_gt_batch, u_num_batch, u_fwd_cno_batch, f"{PROJECT_ROOT}/accuracy_comparison.pdf")
-    print(f"\n[Success] Accuracy comparison saved to: {PROJECT_ROOT}/accuracy_comparison.pdf")
+    out_dir = paths.RESULTS_DIR / "closed_loop"
+    os.makedirs(out_dir, exist_ok=True)
+    evaluate_trajectory_accuracies(u_gt_batch, u_num_batch, u_fwd_cno_batch, str(out_dir / "accuracy_comparison.pdf"))
+    print(f"\n[Success] Accuracy comparison saved to: {out_dir / 'accuracy_comparison.pdf'}")

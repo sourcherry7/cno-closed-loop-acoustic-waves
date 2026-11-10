@@ -1,4 +1,11 @@
-# 
+"""Autoregressive rollout evaluation of the forward CNO on the 120 test trajectories.
+
+Rolls the trained forward model out from u(t=0) with the true velocity field and
+writes relative L1/L2 and absolute errors per step (the report's forward results);
+energy and phase-drift diagnostics are implemented in ``_test_pattern``.
+Run from the repository root:  python -m cno_closed_loop.forward.evaluate_rollout
+"""
+
 import os
 import sys
 import torch
@@ -11,14 +18,9 @@ import matplotlib.pyplot as plt
 from torch.nn import functional as F
 from scipy.signal import correlate2d
 
-# --- 1. SETUP PATHS ---
-PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
-EXTERNAL_CNO_DIR = f"{PROJECT_ROOT}/src/external/CNO/CNO2d_time_dependent_&_foundation_model"
-sys.path.append(EXTERNAL_CNO_DIR)
-sys.path.append(f"{PROJECT_ROOT}/src/my_models")
-
+from cno_closed_loop import paths
 from test_and_fine_tune_utils.test_utils import _load_data
-from wave_loaders import WaveLoader
+from cno_closed_loop.forward.model_loader import WaveLoader
 
 
 def load_json_stats(data_path):
@@ -357,14 +359,14 @@ def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=
                      patterns=[[1]], folder_pattern="errors", steps=15, separate_var=False, 
                      fine_tuned=False, training_folder=None, write_in_file=True):
     
-    base_folder = "/cluster/home/svisnjic/Thalassa/fwd_results/checkpoints"
-    ckpt_file = "epoch=20-step=182784.ckpt"
+    base_folder = str(paths.FORWARD_CHECKPOINT_DIR)
+    ckpt_file = paths.FORWARD_CKPT
     model_dirs = [(base_folder, ckpt_file)]
     sufix = "in_dist_patterns.txt" if in_dist else "out_dist_patterns.txt"
     
     for folder, _model_file in model_dirs:
         _folder = folder if not fine_tuned and training_folder is None else training_folder
-        m_dir = "model_0903_newgauss"
+        m_dir = paths.FORWARD_RUN
         
         train_file = os.path.join(_folder, m_dir, "training_properties.txt")
         net_file   = os.path.join(_folder, m_dir, "net_architecture.txt")
@@ -372,9 +374,9 @@ def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=
         
         loader = WaveLoader(train_file, net_file, ckpt_path, which_name=which_example)
         
-        # --- FIX: INJECT STATS BEFORE LOADING MODEL ---
+        # --- Add the dataset normalization statistics to the configuration before loading the model ---
         loader._ensure_config()  # Pre-load configuration from text files
-        data_path = os.path.join(PROJECT_ROOT, "data")
+        data_path = str(paths.DATA_DIR)
         stats = load_json_stats(data_path)
         loader.loader_dict.update(stats) # Merges mean_c, std_c, etc. into the dictionary
         
@@ -395,8 +397,8 @@ def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=
         test_data_loader = _load_data(which=which_example, loader_dict=loader.loader_dict, 
                                      batch_size=bs, which_loader="test", fix_input_to_time_step=0) 
         
-        output_dir = os.path.join(folder, folder_pattern)
-        if not os.path.exists(output_dir): os.mkdir(output_dir)
+        output_dir = os.path.join(paths.RESULTS_DIR, "forward", folder_pattern)
+        os.makedirs(output_dir, exist_ok=True)
         
         for pattern in patterns:
             T, E_l1, E_l2, E_abs = _test_pattern(model=model, testing_loader=test_data_loader, 
@@ -413,7 +415,7 @@ def _evaluate_models(folders, which_example="wave_gauss", cluster=True, in_dist=
             print(f"Results for pattern {pattern} saved to {error_file}")
 
 if __name__ == "__main__":
-    base_checkpoints_dir = "/cluster/home/svisnjic/Thalassa/fwd_results/checkpoints"
+    base_checkpoints_dir = str(paths.FORWARD_CHECKPOINT_DIR)
     target_example = "wave_gauss"
     
     # Pattern [1]*15 provides the most high-resolution temporal diagnostic
@@ -423,7 +425,7 @@ if __name__ == "__main__":
     print("      CLOSED-LOOP FORWARD MODEL: FULL PHYSICS DIAGNOSTIC      ")
     print("="*60)
     print(f"Targeting: 120 Test Trajectories")
-    print(f"Metrics: Rel L1, Rel L2, Phase Drift (px), Energy Stability")
+    print(f"Metrics: relative L1/L2 and absolute error per rollout step")
     print("="*60 + "\n")
 
     _evaluate_models(
@@ -441,5 +443,5 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("DIAGNOSTIC COMPLETE")
     print(f"Metrics folder: full_physics_diagnostic")
-    print("Plots generated: energy_stability.pdf, phase_drift.pdf")
+    print("Energy and phase-drift diagnostics are available in _test_pattern (currently disabled).")
     print("="*60)

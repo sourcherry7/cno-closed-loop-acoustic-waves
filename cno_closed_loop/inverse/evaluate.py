@@ -1,3 +1,11 @@
+"""Evaluation of the inverse CNO on the 120 test trajectories.
+
+Produces the inverse-problem results of the report: relative L1/L2 errors per
+snapshot gap dt (CSV + bar chart), example reconstructions, absolute-error maps
+and the radially averaged power spectrum of true vs predicted velocity fields.
+Run from the repository root:  python -m cno_closed_loop.inverse.evaluate
+"""
+
 import os
 import sys
 import ast
@@ -7,20 +15,15 @@ import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
-MYMODELS_DIR = f"{PROJECT_ROOT}/src/my_models"
-INV_DIR = f"{MYMODELS_DIR}/inverse_problem"
-sys.path.append(INV_DIR)
-
-from inv_CNO_timeModule_CIN import CNO_time
-from inv_wave_loader import InverseWaveGaussians
-from inv_utils import _load_inverse_dict
+from cno_closed_loop import paths
+from cno_closed_loop.inverse.model import InverseCNO
+from cno_closed_loop.inverse.dataset import InverseWaveGaussians
+from cno_closed_loop.inverse.config import _load_inverse_dict
 
 # -----------------------------------------------------------------------------
-# SMART FIX: GLOBAL CUDA BYPASS
+# Use the pure-PyTorch reference implementation of filtered_lrelu
 # -----------------------------------------------------------------------------
-# Intercepts the hardcoded CNO functional call in memory to prevent 
-# JIT C++ compilation and force the native PyTorch reference implementation.
+# Avoids JIT-compiling the custom CUDA kernel of the CNO activation at inference.
 def patch_cno_cuda_ops():
     for module_name, module in sys.modules.items():
         if 'ops.filtered_lrelu' in module_name and hasattr(module, 'filtered_lrelu'):
@@ -159,9 +162,9 @@ def summarize_and_save(metrics_dict, output_dir):
 def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    folder = "/cluster/home/svisnjic/Thalassa/inv_results/checkpoints/" + str(model_name) # "model_1802_second"
-    ckpt_path = f"{folder}/{checkpoint_name}" # epoch=2-step=46080.ckpt
-    data_path = "/cluster/home/svisnjic/Thalassa/data"
+    folder = str(paths.INVERSE_CHECKPOINT_DIR / model_name)
+    ckpt_path = f"{folder}/{checkpoint_name}"
+    data_path = str(paths.DATA_DIR)
     
     # 1. Load Architecture
     files = [f"{folder}/inv_training_properties.txt", f"{folder}/inv_net_architecture.txt"]
@@ -181,9 +184,9 @@ def make_test_dataset_from_ckpt(model_name, checkpoint_name, num_traj):
     _allowed = list(range(0 if loader_dict.get("include_zero") else 1, int(train_prop.get("time_steps", 15)) + 1))
     loader_dict['allowed_transitions'] = _allowed
 
-    # 3. Model Initialization (RESTORED MISSING CONDITIONAL PARAMS)
+    # 3. Model initialization
     print(f"Initializing model on {device}...")
-    model = CNO_time.load_from_checkpoint(
+    model = InverseCNO.load_from_checkpoint(
         ckpt_path,
         map_location=device,
         in_dim=loader_dict["in_dim"],
@@ -339,60 +342,23 @@ def main(model_name, checkpoint_name, num_traj):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
     
-    output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
+    output_dir = str(paths.RESULTS_DIR / "inverse" / model_name)
     os.makedirs(output_dir, exist_ok=True)
     
     print("\n--- Running Diagnostics ---")
     
-    # 1. New Absolute Error Heatmap for a random sample (e.g., sample 500)
-    
-    # 2. New Spectral Analysis across all test trajectories
+    # Spectral analysis (radially averaged power spectrum) across all test trajectories
     plot_spectral_analysis(model, test_dataset, device, output_dir, num_samples=num_traj)
     
-    # # Existing code for summary metrics and trajectory plots
+    # Representative samples: predictions and absolute-error maps for time gaps dt = 1 and 9
     print("\nGenerating representative plots...")
-    for traj in range(5): # Reduced for brevity
+    for traj in range(5):
         for dt in [1, 9]:
             plot_absolute_error_diagnostic(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/diagnostic_abs_error_{traj}_dt_{dt}.pdf")
-            # plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
+            plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
 
-    # metrics = calculate_test_metrics(model, test_dataset, device)
-    # summarize_and_save(metrics, output_dir)
-# -----------------------------------------------------------------------------
-# MAIN EXECUTION
-# -----------------------------------------------------------------------------
-# def main(model_name, checkpoint_name, num_traj):
-#     model, test_dataset = make_test_dataset_from_ckpt(model_name=model_name, checkpoint_name = checkpoint_name, num_traj=num_traj)
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     model.to(device).eval()
-#     # 5. Run Testing
-#     output_dir = "/cluster/home/svisnjic/Thalassa/inv_results/testing_visuals" + "/" + model_name
-#     os.makedirs(output_dir, exist_ok=True)
-    
-#     print("\nGenerating representative plots...")
-    
-#     for traj in range(5):
-#         for dt in [1, 9]:
-#             plot_test_sample(model, test_dataset, traj * 120 + dt - 1, f"{output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
-#             print(f"Plotted trajctory {traj} at time pair (0, {dt}) and saved fig to: {output_dir}/test_trajectory_{traj}_dt_{dt}.pdf")
-
-#     metrics = calculate_test_metrics(model, test_dataset, device)
-#     summarize_and_save(metrics, output_dir)
-
-    
-#     df = pd.read_csv(f'{output_dir}/test_metrics_summary.csv')
-#     df = df.iloc[:-1]
-#     plt.figure(figsize=(6, 3.5))
-#     plt.bar(df["dt"], df["rel_l2"], color='#f28e2b')
-#     plt.xlabel("Time Step Gap (dt)")
-#     plt.ylabel("Mean Relative L2 Error")
-#     plt.title("Error vs Snapshot Separation")
-#     plt.grid(axis='y', alpha=0.3)
-#     plt.tight_layout(pad=1.1)
-#     plt.savefig(f"{output_dir}/error_by_dt.pdf")
-#     plt.close()
-#     print(f'Saved error graph to {output_dir}/error_by_dt.pdf')
-
-
+    # Relative L1/L2 errors per time gap dt (CSV + bar chart)
+    metrics = calculate_test_metrics(model, test_dataset, device)
+    summarize_and_save(metrics, output_dir)
 if __name__ == "__main__":
-    main(model_name = "model_0103_new_data", checkpoint_name = "epoch=3-step=30720.ckpt", num_traj=120)
+    main(model_name=paths.INVERSE_RUN, checkpoint_name=paths.INVERSE_CKPT, num_traj=120)

@@ -1,3 +1,13 @@
+# Training script for the forward (time-dependent) CNO on the Wave-Gauss data.
+#
+# Adapted from TrainCNO_time_L.py of camlab-ethz/ConvolutionalNeuralOperator
+# (MIT License), commit 75a3b9b. Changes: Wave-Gauss configuration and
+# hyperparameters, a callback that plots a 15-step autoregressive rollout against
+# the ground truth after each validation epoch, optional resuming, and run
+# property files moved into the run folder.
+# Run from the repository root:  python -m cno_closed_loop.forward.train
+
+from cno_closed_loop import paths  # also makes the CNO code (external/CNO) importable
 from pytorch_lightning import Trainer
 from CNO_timeModule_CIN import CNO_time
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -13,8 +23,6 @@ import shutil
 import pandas as pd
 import torch
 
-import os
-import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from pytorch_lightning.callbacks import Callback
@@ -59,7 +67,7 @@ class RolloutVisualCallback(Callback):
                 dt_val = 1.0 / stats["time"]
                 t_scalar = torch.tensor([[dt_val]], device=device)
                 
-                # If your model expects the time-channel as a 3rd input
+                # Time channel as third input (if enabled)
                 if val_dataset.time_input:
                     t_channel = torch.ones_like(c_norm) * dt_val
 
@@ -86,7 +94,7 @@ class RolloutVisualCallback(Callback):
 
                 preds_phys = np.array(preds_phys)
 
-                # 4. Plotting (Your side-by-side logic)
+                # 4. Plotting: ground truth (rows 0-3) vs. CNO rollout (rows 4-7)
                 u_min = min(u_gt_phys.min(), preds_phys.min())
                 u_max = max(u_gt_phys.max(), preds_phys.max())
                 
@@ -165,9 +173,9 @@ if len(sys.argv) <= 2:
     
     # WHAT IS THE EXPERIMENT?
     which_example = "wave_gauss"
-    new_which_example = "new_wave_gauss" # this is a hardcoded workaround for the new all_experiments.json adapted to the new dataset.
+    new_which_example = "new_wave_gauss"  # all_experiments.json entry for the 5,256-trajectory HDF5 dataset
     
-    folder = "/cluster/home/svisnjic/Thalassa/fwd_results/checkpoints" # "--- PROVIDE THE FOLDER TO SAVE THE MODEL ----" 
+    folder = str(paths.FORWARD_CHECKPOINT_DIR)
     
 else:
     raise ValueError("To many args")
@@ -204,7 +212,7 @@ df.to_csv(folder + '/net_architecture.txt', header=False, index=True, mode='w')
 #---------------------------------------------------------
 # Load parameters related to the specific experiment -- "DataLoaders/all_experiments.json"
 
-Dict_EXP = json.load( open( "DataLoaders/all_experiments.json" ))
+Dict_EXP = json.load( open( paths.CNO_DIR / "DataLoaders" / "all_experiments.json" ))
 if new_which_example in Dict_EXP:
     loader_dict =  Dict_EXP[new_which_example]
 else:
@@ -273,7 +281,7 @@ ver = "_0903_newgauss" # Just a random string to be added to the model name
 
 visual_callback = RolloutVisualCallback(
     save_dir=folder + "/visuals" + str(ver), 
-    frequency=1  # Save every 10 epochs
+    frequency=1  # save every epoch
 )
 
 checkpoint_callback = ModelCheckpoint(dirpath = folder+"/model"+str(ver), monitor='mean_val_l')
@@ -287,10 +295,11 @@ trainer = Trainer(devices = -1,
                 strategy="ddp_find_unused_parameters_true", #IMPORTANT!!!
                 logger=logger)
 
-# --- ADDED RESUMPTION LOGIC ---
-checkpoint_path = os.path.join(folder, "model" + str(ver), "epoch=3-step=34816.ckpt")
+# --- Optionally resume an interrupted run ---
+RESUME_CKPT = None  # e.g. "epoch=3-step=34816.ckpt" (a checkpoint inside the run folder)
+checkpoint_path = os.path.join(folder, "model" + str(ver), RESUME_CKPT) if RESUME_CKPT else None
 
-if os.path.exists(checkpoint_path):
+if checkpoint_path and os.path.exists(checkpoint_path):
     print(f"==================================================")
     print(f"RESUMING FROM CHECKPOINT: {checkpoint_path}")
     print(f"==================================================")

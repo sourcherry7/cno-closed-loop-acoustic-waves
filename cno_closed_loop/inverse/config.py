@@ -1,10 +1,18 @@
+# Experiment configuration and dataset factory for the inverse problem.
+#
+# Adapted from camlab-ethz/ConvolutionalNeuralOperator (MIT License), commit 75a3b9b:
+#   _load_inverse_dict    follows test_and_fine_tune_utils/test_utils.py::_load_dict
+#   _load_inverse_dataset follows DataLoaders/load_utils.py::_load_dataset
+# Changes: inverse-problem I/O (inputs u(t1), u(t2), dt; output c) for the Wave-Gauss data.
+
 import os
 import sys
 import h5py
 import torch
 import numpy as np
 
-from inv_wave_loader import InverseWaveGaussians
+from cno_closed_loop import paths
+from cno_closed_loop.inverse.dataset import InverseWaveGaussians
 
 def _load_inverse_dataset(dic, 
                   which, 
@@ -27,24 +35,11 @@ def _load_inverse_dataset(dic,
                                         resolution = 128,
                                         in_dist = True,
                                         num_trajectories = num_samples,
-                                        data_path = "/cluster/home/svisnjic/Thalassa/data", # "---- PROVIDE THE FOLDER PATH ----",
+                                        data_path = str(paths.DATA_DIR),
                                         time_input = dic["time_input"],
                                         masked_input = masked_input,
                                         allowed_transitions = dic["allowed_tran"])
 
-    
-    # elif which == "wave_seismic": # need to do for seismic too...
-    #     train_dataset =   WaveSeismic(max_num_time_steps = dic["time_steps"], 
-    #                                 time_step_size = dic["dt"],
-    #                                 fix_input_to_time_step = fix_input_to_time_step,
-    #                                 which = which_loader,
-    #                                 resolution = 128,
-    #                                 in_dist = True,
-    #                                 num_trajectories = num_samples,
-    #                                 data_path = "/cluster/home/svisnjic/Thalassa/data", # "---- PROVIDE THE FOLDER PATH ----",
-    #                                 time_input = dic["time_input"],
-    #                                 masked_input = masked_input,
-    #                                 allowed_transitions = dic["allowed_tran"])
 
     else:
         raise ValueError("Not implemented experiment")
@@ -141,7 +136,7 @@ def _load_inverse_dict(files, which_example, steps=15, is_masked=None):
         d["is_masked"] = None 
 
     if which_example in ['wave_gauss']:
-        d['in_dim'] = 3 # u(t1), u(t2), dt= t2-t1  are the inputs # if d['time_input'] == True else 2 # this shouldn't happen (copy paste redundancy)
+        d['in_dim'] = 3 # inputs: u(t1), u(t2) and dt = t2 - t1
         d['out_dim'] = 1 # the output dim is one -> predict only c
         d['separate'] = False
         d["separate_dim"] = [1] # there is no separate physical quantity, only c

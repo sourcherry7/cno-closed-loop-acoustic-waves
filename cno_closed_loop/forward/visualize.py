@@ -1,3 +1,8 @@
+"""Visualization of forward-CNO rollouts: evolution grids, GIFs and error plots.
+
+Run from the repository root:  python -m cno_closed_loop.forward.visualize
+"""
+
 import os
 import sys
 import torch
@@ -7,11 +12,7 @@ import matplotlib.animation as animation
 import h5py
 import json
 
-# --- SETUP PATHS ---
-PROJECT_ROOT = "/cluster/home/svisnjic/Thalassa"
-EXTERNAL_CNO_DIR = f"{PROJECT_ROOT}/src/external/CNO/CNO2d_time_dependent_&_foundation_model"
-sys.path.append(EXTERNAL_CNO_DIR)
-sys.path.append(f"{PROJECT_ROOT}/src/my_models")
+from cno_closed_loop import paths
 
 class WaveVisualizer:
     def __init__(self, wave_loader):
@@ -19,8 +20,8 @@ class WaveVisualizer:
         self.model = self.loader.load_model()
         self.device = self.loader.device
         
-        # DYNAMIC LOADING: Read from your new JSON
-        stats_path = os.path.join(PROJECT_ROOT, "data/new_normalization_stats.json")
+        # Normalization constants of the dataset
+        stats_path = os.path.join(paths.DATA_DIR, "new_normalization_stats.json")
         with open(stats_path, 'r') as f:
             js = json.load(f)
         
@@ -31,9 +32,9 @@ class WaveVisualizer:
             "std_c": js['std_c'],
             "time_max": float(js['time_steps']),
             "step_max": js['time_steps'],
-            "filename": "new_wave_gauss_data.h5" # Point to new H5
+            "filename": "new_wave_gauss_data.h5" # HDF5 dataset file
         }
-        data_path = f"{PROJECT_ROOT}/data/{self.constants['filename']}"
+        data_path = os.path.join(paths.DATA_DIR, self.constants['filename'])
         try: self.reader = h5py.File(data_path, "r")
         except FileNotFoundError: print(f"WARNING: Could not find data file at {data_path}")
 
@@ -354,7 +355,7 @@ class WaveVisualizer:
         if precomputed_data: preds, _ = precomputed_data
         else: preds, _ = self.autoregressive_rollout(traj_idx)
         
-        # --- NEW: MAP TO TEST SET ---
+        # --- Map to the test set ---
         global_idx = self.test_start_idx + traj_idx
         ground_truth = self.reader["u"][global_idx, 0:len(preds)]
         l1_rel, l2_rel = [], []
@@ -381,7 +382,7 @@ class WaveVisualizer:
         plt.savefig(save_path); plt.close()
         print(f"Saved {fname} to {save_path}.")
 
-    def create_error_comparison_gif(self, traj_idx=0, save_dir=f"{PROJECT_ROOT}/fwd_results", fps=3, precomputed_data=None):
+    def create_error_comparison_gif(self, traj_idx=0, save_dir=str(paths.RESULTS_DIR / "forward"), fps=3, precomputed_data=None):
         if precomputed_data: preds, c_field = precomputed_data
         else: preds, c_field = self.autoregressive_rollout(traj_idx)
 
@@ -409,20 +410,21 @@ class WaveVisualizer:
         print(f"Saved comparison GIF to {save_dir}")
 
 if __name__ == "__main__":
-    from wave_loaders import WaveLoader
-    base_dir = f"{PROJECT_ROOT}/fwd_results/checkpoints/model_0903_newgauss"
-    plot_dir = base_dir + "/../visuals_0903_newgauss"
-    loader = WaveLoader(os.path.join(base_dir, "training_properties.txt"), os.path.join(base_dir, "net_architecture.txt"), os.path.join(base_dir, "epoch=20-step=182784.ckpt"), which_name="wave_gauss")
+    from cno_closed_loop.forward.model_loader import WaveLoader
+    base_dir = str(paths.FORWARD_CHECKPOINT_DIR / paths.FORWARD_RUN)
+    plot_dir = str(paths.RESULTS_DIR / "forward" / "visuals")
+    os.makedirs(plot_dir, exist_ok=True)
+    loader = WaveLoader(os.path.join(base_dir, "training_properties.txt"), os.path.join(base_dir, "net_architecture.txt"), os.path.join(base_dir, paths.FORWARD_CKPT), which_name="wave_gauss")
     viz = WaveVisualizer(loader)
     
-    err_file = f"{base_dir}/../full_physics_diagnostic/1_1_1_1_1_1_1_1_1_1_1_1_1_1_1_in_dist_patterns.txt"
+    # Written by: python -m cno_closed_loop.forward.evaluate_rollout
+    err_file = os.path.join(paths.RESULTS_DIR, "forward", "full_physics_diagnostic", "1_1_1_1_1_1_1_1_1_1_1_1_1_1_1_in_dist_patterns.txt")
     if os.path.exists(err_file): 
         viz.plot_dataset_errors(err_file, save_path=f"{plot_dir}/aggregated_errors.pdf")
         viz.plot_dataset_l2_errors(err_file, save_path=f"{plot_dir}/aggregated_l2_errors.pdf")
 
 
     for idx in np.arange(0,2):
-        # idx=0
         print(f"Visualizing trajectory {idx}...")
         data = viz.get_rollout_data(idx)
         viz.plot_rollout_errors(idx, precomputed_data=data, save_dir=plot_dir)
